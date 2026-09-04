@@ -71,7 +71,7 @@ export default function TripHistory() {
 
       {/* Bottom Navigation */}
       <View style={styles.bottomNav}>
-        <TouchableOpacity style={styles.navItem} onPress={() => router.push('/home')}>
+        <TouchableOpacity style={styles.navItem} onPress={() => router.push('/location_picker')}>
           <Ionicons name="home-outline" size={24} color={Colors.light.icon} />
           <Text style={[styles.navText, { color: Colors.light.icon }]}>Home</Text>
         </TouchableOpacity>

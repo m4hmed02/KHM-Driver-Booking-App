@@ -110,13 +110,7 @@ export default function Signup() {
       Alert.alert('Success', 'Account created successfully!', [
         {
           text: 'OK',
-          onPress: () => {
-            if (router.canGoBack()) {
-              router.back();
-            } else {
-              router.replace('/login');
-            }
-          }
+          onPress: () => router.replace('/login')
         }
       ]);
     } catch (error: any) {

@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { forwardRef, useImperativeHandle } from 'react';
 import { View, Dimensions, StyleSheet } from 'react-native';
 import Animated, {
     useAnimatedStyle,
@@ -11,7 +11,11 @@ const { height: SCREEN_HEIGHT } = Dimensions.get('window');
 
 const SPRING_CONFIG = { damping: 50, stiffness: 300, mass: 0.8 };
 
-interface DraggableBottomSheetProps {
+export interface DraggableBottomSheetRef {
+    snapToIndex: (index: number) => void;
+}
+
+export interface DraggableBottomSheetProps {
     /**
      * Snap points as fractions of screen height FROM the bottom.
      * e.g. [0.45, 0.70, 0.93] — must be sorted ascending.
@@ -22,12 +26,12 @@ interface DraggableBottomSheetProps {
     backgroundColor?: string;
 }
 
-export function DraggableBottomSheet({
+export const DraggableBottomSheet = forwardRef<DraggableBottomSheetRef, DraggableBottomSheetProps>(({
     snapPoints = [0.45, 0.70, 0.93],
     initialSnap = 0,
     children,
     backgroundColor = '#FFFFFF',
-}: DraggableBottomSheetProps) {
+}, ref) => {
     /**
      * Convert each fraction to a translateY value.
      * fraction=0.45  →  translateY = SCREEN_HEIGHT * 0.55   (less visible)
@@ -95,6 +99,21 @@ export function DraggableBottomSheet({
             startY.value = target;
         });
 
+    useImperativeHandle(ref, () => ({
+        snapToIndex: (index: number) => {
+            'worklet';
+            // Index 0 = highest fraction (most visible) in snapping logic??
+            // Let's check snaps array: SCREEN_HEIGHT * (1 - f)
+            // if snapPoints = [0.45, 0.70, 0.93], snaps = [0.55H, 0.3H, 0.07H]
+            // We want index 2 to be the 0.93 fraction (highest).
+            const target = snaps[index];
+            if (target !== undefined) {
+                translateY.value = withSpring(target, SPRING_CONFIG);
+                startY.value = target;
+            }
+        }
+    }));
+
     const animatedStyle = useAnimatedStyle(() => ({
         transform: [{ translateY: translateY.value }],
     }));
@@ -110,7 +129,7 @@ export function DraggableBottomSheet({
             </Animated.View>
         </GestureDetector>
     );
-}
+});
 
 const styles = StyleSheet.create({
     sheet: {

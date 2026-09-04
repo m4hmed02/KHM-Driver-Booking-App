@@ -54,67 +54,66 @@ export default function Profile() {
   return (
     <View style={styles.container}>
 
-      <ScrollView
-        style={styles.content}
-        contentContainerStyle={{ flexGrow: 1, justifyContent: 'center' }}
-      >
-        <View style={styles.profileSection}>
-          <View style={styles.profileImageContainer}>
-            <Image
-              source={getAvatarSource()}
-              style={styles.profileImage}
-            />
-          </View>
-          <Text style={styles.name}>{user?.name || 'User'}</Text>
-          <Text style={styles.contactInfo}>{user?.phone || ''}</Text>
-          <Text style={styles.contactInfo}>
-            {user?.email && user.email.trim() !== '' ? user.email : 'Link Your email'}
+      <View style={{ flex: 1, paddingTop: 40, paddingHorizontal: 20, backgroundColor: Colors.light.background }}>
+        
+        <View style={{ alignItems: 'center', marginBottom: 20, paddingBottom: 24, borderBottomWidth: 1, borderBottomColor: Colors.light.border }}>
+          <Image
+            source={getAvatarSource()}
+            style={{ width: 90, height: 90, borderRadius: 45, marginBottom: 16, borderWidth: 3, borderColor: Colors.light.primary }}
+          />
+          <Text style={{ fontSize: 24, fontWeight: '700', color: Colors.light.text, marginBottom: 4 }}>
+            {user?.name || 'User'}
+          </Text>
+          <Text style={{ fontSize: 14, color: Colors.light.secondaryText }}>
+            {user?.email && user.email.trim() !== '' ? user.email : 'Link your email'}
           </Text>
         </View>
 
-        <View style={styles.menuCard}>
-          <TouchableOpacity style={[styles.menuItem, styles.menuItemBorder]}>
-            <View style={styles.menuIconContainer}>
-              <Ionicons name="settings-outline" size={20} color={Colors.light.primary} />
-            </View>
-            <Text style={styles.menuText}>Settings</Text>
-            <Ionicons name="chevron-forward" size={20} color={Colors.light.icon} />
-          </TouchableOpacity>
+        <ScrollView contentContainerStyle={{ flexGrow: 1 }} showsVerticalScrollIndicator={false}>
+          <View style={{ marginBottom: 20 }}>
+            <TouchableOpacity style={[styles.menuItem, { paddingHorizontal: 0, borderBottomWidth: 1, borderBottomColor: Colors.light.border }]} onPress={() => router.push('/trip_history')}>
+              <View style={styles.menuIconContainer}>
+                <Ionicons name="time-outline" size={20} color={Colors.light.primary} />
+              </View>
+              <Text style={styles.menuText}>Trip History</Text>
+              <Ionicons name="chevron-forward" size={18} color={Colors.light.icon} />
+            </TouchableOpacity>
 
-          <TouchableOpacity style={[styles.menuItem, styles.menuItemBorder]}>
-            <View style={styles.menuIconContainer}>
-              <Ionicons name="help-circle-outline" size={20} color={Colors.light.primary} />
-            </View>
-            <Text style={styles.menuText}>Help & Support</Text>
-            <Ionicons name="chevron-forward" size={20} color={Colors.light.icon} />
-          </TouchableOpacity>
+            <TouchableOpacity style={[styles.menuItem, { paddingHorizontal: 0, borderBottomWidth: 1, borderBottomColor: Colors.light.border }]}>
+              <View style={styles.menuIconContainer}>
+                <Ionicons name="settings-outline" size={20} color={Colors.light.primary} />
+              </View>
+              <Text style={styles.menuText}>Settings</Text>
+              <Ionicons name="chevron-forward" size={18} color={Colors.light.icon} />
+            </TouchableOpacity>
 
+            <TouchableOpacity style={[styles.menuItem, { paddingHorizontal: 0 }]}>
+              <View style={styles.menuIconContainer}>
+                <Ionicons name="help-circle-outline" size={20} color={Colors.light.primary} />
+              </View>
+              <Text style={styles.menuText}>Help & Support</Text>
+              <Ionicons name="chevron-forward" size={18} color={Colors.light.icon} />
+            </TouchableOpacity>
+          </View>
+        </ScrollView>
+
+        {/* Fixed Bottom Section for Logout */}
+        <View style={{ paddingTop: 16, paddingBottom: 32 }}>
           <TouchableOpacity
-            style={styles.menuItem}
+            style={{ 
+              flexDirection: 'row',
+              alignItems: 'center',
+              justifyContent: 'center',
+              paddingVertical: 14, 
+              borderRadius: 12, 
+              backgroundColor: Colors.light.red 
+            }}
             onPress={handleLogout}
           >
-            <View style={styles.menuIconContainer}>
-              <Ionicons name="log-out-outline" size={20} color="#ff3b30" />
-            </View>
-            <Text style={[styles.menuText, { color: '#ff3b30' }]}>Logout</Text>
-            <Ionicons name="chevron-forward" size={20} color={Colors.light.icon} />
+            <Ionicons name="log-out-outline" size={20} color="#FFFFFF" style={{ marginRight: 8 }} />
+            <Text style={{ color: '#FFFFFF', fontWeight: '700', fontSize: 16 }}>Logout</Text>
           </TouchableOpacity>
         </View>
-      </ScrollView>
-
-      <View style={styles.bottomNav}>
-        <TouchableOpacity style={styles.navItem} onPress={() => router.push('/home')}>
-          <Ionicons name="home-outline" size={24} color={Colors.light.icon} />
-          <Text style={[styles.navText, { color: Colors.light.icon }]}>Home</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.navItem} onPress={() => router.push('/trip_history')}>
-          <Ionicons name="time-outline" size={24} color={Colors.light.icon} />
-          <Text style={[styles.navText, { color: Colors.light.icon }]}>History</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.navItem}>
-          <Ionicons name="person" size={24} color={Colors.light.primary} />
-          <Text style={[styles.navText, { color: Colors.light.primary }]}>Profile</Text>
-        </TouchableOpacity>
       </View>
     </View>
   );

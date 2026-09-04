@@ -17,6 +17,8 @@ interface LocationInputCardProps {
   dropoffLocation?: string;
   setDropoffLocation?: (text: string) => void;
   setDropoffCoordinate?: (coord: Coordinate) => void;
+  onInputFocus?: () => void;
+  onFocusChange?: (focusedInput: 'pickup' | 'dropoff' | null) => void;
 }
 
 export function LocationInputCard({
@@ -26,6 +28,8 @@ export function LocationInputCard({
   dropoffLocation,
   setDropoffLocation,
   setDropoffCoordinate,
+  onInputFocus,
+  onFocusChange,
 }: LocationInputCardProps) {
   const styles = useStyles();
   const theme = useTheme();
@@ -51,6 +55,7 @@ export function LocationInputCard({
   ) => {
     Keyboard.dismiss();
     setFocusedInput(null);
+    onFocusChange?.(null);
 
     if (type === 'pickup') {
       setPickupLocation?.(place.primaryText);
@@ -89,7 +94,7 @@ export function LocationInputCard({
     if (suggestions.length === 0) return null;
 
     return (
-      <ScrollView style={{ maxHeight: 150 }} keyboardShouldPersistTaps="handled">
+      <View style={{ width: '100%' }}>
         {suggestions.map((item) => (
           <TouchableOpacity
             key={item.placeId}
@@ -110,7 +115,7 @@ export function LocationInputCard({
             )}
           </TouchableOpacity>
         ))}
-      </ScrollView>
+      </View>
     );
   };
 
@@ -127,16 +132,22 @@ export function LocationInputCard({
           placeholderTextColor={theme.secondaryText}
           value={pickupLocation}
           onChangeText={setPickupLocation}
-          onFocus={() => setFocusedInput('pickup')}
+          onFocus={() => {
+            setFocusedInput('pickup');
+            onInputFocus?.();
+            onFocusChange?.('pickup');
+          }}
         />
         {focusedInput === 'pickup' && (
-          <TouchableOpacity style={styles.mapButton} activeOpacity={0.7} onPress={() => Keyboard.dismiss()}>
+          <TouchableOpacity style={styles.mapButton} activeOpacity={0.7} onPress={() => {
+            Keyboard.dismiss();
+            setFocusedInput(null);
+            onFocusChange?.(null);
+          }}>
             <Text style={styles.mapButtonText}>Done</Text>
           </TouchableOpacity>
         )}
       </View>
-
-      {renderSuggestions(pickupSuggestions, 'pickup', isPickupLoading)}
 
       <View style={styles.inputDivider} />
 
@@ -151,15 +162,25 @@ export function LocationInputCard({
           placeholderTextColor={theme.secondaryText}
           value={dropoffLocation}
           onChangeText={setDropoffLocation}
-          onFocus={() => setFocusedInput('dropoff')}
+          onFocus={() => {
+            setFocusedInput('dropoff');
+            onInputFocus?.();
+            onFocusChange?.('dropoff');
+          }}
         />
         {focusedInput === 'dropoff' && (
-          <TouchableOpacity style={styles.mapButton} activeOpacity={0.7} onPress={() => Keyboard.dismiss()}>
+          <TouchableOpacity style={styles.mapButton} activeOpacity={0.7} onPress={() => {
+            Keyboard.dismiss();
+            setFocusedInput(null);
+            onFocusChange?.(null);
+          }}>
             <Text style={styles.mapButtonText}>Done</Text>
           </TouchableOpacity>
         )}
       </View>
 
+      {/* Render Suggestions for active input below both inputs */}
+      {renderSuggestions(pickupSuggestions, 'pickup', isPickupLoading)}
       {renderSuggestions(dropoffSuggestions, 'dropoff', isDropoffLoading)}
     </View>
   );
