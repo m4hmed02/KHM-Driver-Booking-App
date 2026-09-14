@@ -27,8 +27,8 @@ export default function TabLayout() {
       <AuthProvider>
         <SafeAreaView style={{ flex: 1 }} edges={['bottom']}>
           <StatusBar hidden={true} />
-          <Drawer 
-            screenOptions={{ 
+          <Drawer
+            screenOptions={{
               headerShown: false,
               drawerStyle: {
                 width: '70%',
@@ -42,10 +42,8 @@ export default function TabLayout() {
             <Drawer.Screen name='index' />
             <Drawer.Screen name='home' />
             <Drawer.Screen name='profile' options={{ drawerItemStyle: { display: 'none' } }} />
-            <Drawer.Screen name='trip_details' />
             <Drawer.Screen name='fare_estimate' />
             <Drawer.Screen name='driver_assigned' />
-            <Drawer.Screen name='trip_in_progress' />
             <Drawer.Screen name='trip_completed' />
           </Drawer>
         </SafeAreaView>

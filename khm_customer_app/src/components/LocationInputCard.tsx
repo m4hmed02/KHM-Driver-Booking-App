@@ -124,7 +124,7 @@ export function LocationInputCard({
       {/* Pickup Location */}
       <View style={styles.inputRow}>
         <View style={styles.iconContainer}>
-          <MaterialCommunityIcons name="crosshairs-gps" size={20} color={theme.primary} />
+          <MaterialCommunityIcons name="walk" size={20} color="#000000" />
         </View>
         <TextInput
           style={styles.inputField}
@@ -154,7 +154,7 @@ export function LocationInputCard({
       {/* Dropoff Location */}
       <View style={styles.inputRow}>
         <View style={styles.iconContainer}>
-          <Ionicons name="location-sharp" size={20} color="#1A1A1A" />
+          <MaterialCommunityIcons name="flag-checkered" size={20} color="#1A1A1A" />
         </View>
         <TextInput
           style={styles.inputField}
