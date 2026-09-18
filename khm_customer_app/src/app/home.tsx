@@ -78,6 +78,8 @@ export default function Home() {
     const offerIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
     const mapRef = useRef<MapView>(null);
     const sheetRef = useRef<DraggableBottomSheetRef>(null);
+    const spinAnim = useRef(new Animated.Value(0)).current;
+    const [trackMarker, setTrackMarker] = useState(true);
 
     const [initialRegion, setInitialRegion] = useState<{latitude: number, longitude: number, latitudeDelta: number, longitudeDelta: number} | null>(null);
 
@@ -89,6 +91,34 @@ export default function Home() {
     };
 
     const isButtonDisabled = !pickup.trim() || !dropoff.trim();
+
+    // Spin animation for the location-loading marker icon
+    useEffect(() => {
+        if (isLocationLoading) {
+            const loop = Animated.loop(
+                Animated.timing(spinAnim, {
+                    toValue: 1,
+                    duration: 1000,
+                    useNativeDriver: false,
+                })
+            );
+            loop.start();
+            return () => loop.stop();
+        } else {
+            spinAnim.setValue(0);
+        }
+    }, [isLocationLoading]);
+
+    // Keep tracksViewChanges on briefly after loading finishes so the marker
+    // bitmap re-renders with the walk icon before freezing.
+    useEffect(() => {
+        if (isLocationLoading) {
+            setTrackMarker(true);
+        } else {
+            const timer = setTimeout(() => setTrackMarker(false), 500);
+            return () => clearTimeout(timer);
+        }
+    }, [isLocationLoading]);
 
     useEffect(() => {
         const fetchLocation = async () => {
@@ -543,14 +573,6 @@ export default function Home() {
 
     return (
         <GestureHandlerRootView style={{ flex: 1 }}>
-            {isLocationLoading ? (
-                <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: theme.background }}>
-                    <ActivityIndicator size="large" color={theme.primary} />
-                    <Text style={{ marginTop: 16, fontSize: 15, color: theme.secondaryText, fontWeight: '500' }}>
-                        Finding your location...
-                    </Text>
-                </View>
-            ) : (
             <View style={{ flex: 1 }}>
                 {/* Drawer Menu Button */}
                 <TouchableOpacity
@@ -774,9 +796,9 @@ export default function Home() {
                             </View>
                         </Marker>
                     )}
-                    {(pickupCoordinate || (pickup === '' && initialRegion)) && (
-                        <Marker coordinate={pickupCoordinate || initialRegion!}>
-                            <View style={{ alignItems: 'center' }}>
+                    {!tripInProgress && (pickupCoordinate || (pickup === '' && (initialRegion || isLocationLoading))) && (
+                        <Marker coordinate={pickupCoordinate || initialRegion || defaultRegion} tracksViewChanges={trackMarker} anchor={{ x: 0.5, y: 1 }}>
+                            <View style={{ alignItems: 'center', paddingBottom: 2 }}>
                                 <View style={{
                                     backgroundColor: '#FFFFFF',
                                     width: 40, height: 40, borderRadius: 10,
@@ -784,15 +806,28 @@ export default function Home() {
                                     justifyContent: 'center', alignItems: 'center',
                                     borderWidth: 1.5, borderColor: '#E0E0E0',
                                 }}>
-                                    <MaterialCommunityIcons name="walk" size={24} color="#000000" />
+                                    {isLocationLoading ? (
+                                        <Animated.View style={{
+                                            transform: [{
+                                                rotate: spinAnim.interpolate({
+                                                    inputRange: [0, 1],
+                                                    outputRange: ['0deg', '360deg'],
+                                                }),
+                                            }],
+                                        }}>
+                                            <MaterialCommunityIcons name="loading" size={24} color="#000000" />
+                                        </Animated.View>
+                                    ) : (
+                                        <MaterialCommunityIcons name="walk" size={24} color="#000000" />
+                                    )}
                                 </View>
                                 <View style={{ width: 2, height: 14, backgroundColor: '#000000' }} />
                                 <View style={{ width: 7, height: 7, borderRadius: 3.5, backgroundColor: '#000000' }} />
                             </View>
                         </Marker>
                     )}
-                    {(dropoffCoordinate || (dropoff === '' && initialRegion)) && (
-                        <Marker coordinate={dropoffCoordinate || initialRegion!}>
+                    {!(driverArriving && !driverArrived) && dropoffCoordinate && (
+                        <Marker coordinate={dropoffCoordinate}>
                             <View style={{ alignItems: 'center' }}>
                                 <View style={{
                                     backgroundColor: '#FFFFFF',
@@ -1349,7 +1384,6 @@ export default function Home() {
                     </View>
                 )}
             </View>
-            )}
         </GestureHandlerRootView>
     );
 }
