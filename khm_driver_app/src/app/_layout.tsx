@@ -42,8 +42,7 @@ export default function TabLayout() {
             <Drawer.Screen name='index' />
             <Drawer.Screen name='home' />
             <Drawer.Screen name='profile' options={{ drawerItemStyle: { display: 'none' } }} />
-            <Drawer.Screen name='fare_estimate' />
-            <Drawer.Screen name='driver_assigned' />
+            <Drawer.Screen name='trip_history' />
             <Drawer.Screen name='trip_completed' />
           </Drawer>
         </SafeAreaView>

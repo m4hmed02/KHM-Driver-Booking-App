@@ -17,6 +17,7 @@ export interface RegisterPayload {
     phone: string;
     email: string;
     password: string;
+    role?: string;
     avatar?: {
         uri: string;
         name: string;
