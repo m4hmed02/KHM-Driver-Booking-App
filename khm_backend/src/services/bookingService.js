@@ -4,9 +4,33 @@ exports.createBooking = async (customerId, bookingData) => {
   const booking = await Booking.create({
     customer: customerId,
     ...bookingData,
+    expiresAt: new Date(Date.now() + 120_000),
     status: 'requesting',
   });
   return booking;
+};
+
+exports.deleteBooking = async (bookingId, customerId) => {
+  const deletedBooking = await Booking.findOneAndDelete({
+    _id: bookingId,
+    customer: customerId,
+    status: 'requesting',
+  });
+
+  if (deletedBooking) return;
+
+  const existingBooking = await Booking.findById(bookingId).select('customer');
+  if (!existingBooking) return;
+
+  if (existingBooking.customer.toString() !== customerId.toString()) {
+    const error = new Error('Booking not found');
+    error.statusCode = 404;
+    throw error;
+  }
+
+  const error = new Error('Booking is no longer pending and cannot be deleted');
+  error.statusCode = 409;
+  throw error;
 };
 
 exports.getAvailableBookings = async () => {
@@ -65,6 +89,7 @@ exports.acceptDriverOffer = async (bookingId, customerId, driverId) => {
   booking.driver = acceptedOffer.driver;
   booking.estimatedFare = acceptedOffer.fare;
   booking.status = 'accepted';
+  booking.expiresAt = null;
   acceptedOffer.status = 'accepted';
 
   await booking.save();
@@ -90,7 +115,7 @@ exports.getBookingStatus = async (bookingId) => {
 exports.updateBookingStatus = async (bookingId, status) => {
   const booking = await Booking.findByIdAndUpdate(
     bookingId,
-    { status },
+    { status, expiresAt: null },
     { new: true }
   )
   .populate('driver', 'name phone avatar')

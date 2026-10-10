@@ -1,16 +1,16 @@
-import React, { useState } from 'react';
-import { View, Text, TouchableOpacity } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
-import { styles } from '../styles/trip_completed.styles';
+import { useState } from 'react';
+import { Text, TouchableOpacity, View } from 'react-native';
 import { Colors } from '../constants/theme';
+import { styles } from '../styles/trip_completed.styles';
 
 export default function TripCompleted() {
   const router = useRouter();
   const [rating, setRating] = useState(0);
 
   const navigateHome = () => {
-    router.push('/location_picker');
+    router.replace('/home');
   };
 
   return (

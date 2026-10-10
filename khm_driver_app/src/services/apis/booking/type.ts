@@ -1,20 +1,7 @@
-export interface Location {
+export interface BookingLocation {
     address: string;
     latitude: number;
     longitude: number;
-}
-
-export interface CreateBookingPayload {
-    pickupLocation: Location;
-    dropoffLocation: Location;
-    bookingType: 'driver_now' | 'schedule_driver' | 'contract_driver';
-    scheduledTime?: string;
-    estimatedFare?: number; // Added to pass the user's initial fare offer
-    vehicleInfo?: {
-        make?: string;
-        model?: string;
-        plateNumber?: string;
-    };
 }
 
 export interface DriverInfo {
@@ -22,27 +9,34 @@ export interface DriverInfo {
     name: string;
     phone: string;
     avatar?: string;
-    rating?: number; // Useful for the customer when choosing an offer
+    rating?: number;
 }
 
-// NEW: Interface for driver fare offers
+export interface CustomerInfo {
+    _id: string;
+    name: string;
+    phone: string;
+    avatar?: string;
+    rating?: number;
+}
+
 export interface Offer {
     _id: string;
-    driver: DriverInfo;
+    driver: DriverInfo | string;
     fare: number;
     status: 'pending' | 'accepted' | 'rejected';
 }
 
 export interface Booking {
     _id: string;
-    customer: DriverInfo | string;
+    customer: CustomerInfo | string;
     driver: DriverInfo | string | null;
-    pickupLocation: Location;
-    dropoffLocation: Location;
+    pickupLocation: BookingLocation;
+    dropoffLocation: BookingLocation;
     bookingType: string;
     scheduledTime: string | null;
     estimatedFare: number;
-    offers: Offer[]; // NEW: Array of offers from different drivers
+    offers: Offer[];
     status: 'requesting' | 'accepted' | 'arriving' | 'started' | 'completed' | 'cancelled';
     createdAt: string;
     updatedAt: string;

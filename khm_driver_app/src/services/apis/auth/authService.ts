@@ -26,6 +26,9 @@ export const registerApi = async (payload: RegisterPayload): Promise<User> => {
     formData.append('phone', payload.phone);
     formData.append('email', payload.email);
     formData.append('password', payload.password);
+    if (payload.role) {
+        formData.append('role', payload.role);
+    }
 
     if (payload.avatar) {
         formData.append('avatar', {

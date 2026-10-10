@@ -1,120 +1,300 @@
-import React, { useState } from 'react';
-import { View, Text, TouchableOpacity, Image, ScrollView, ActivityIndicator, Alert } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
-import { styles } from '../styles/profile.styles';
+import { useNavigation, useRouter } from 'expo-router';
+import { useState } from 'react';
+import {
+    ActivityIndicator,
+    Alert,
+    Image,
+    ScrollView,
+    StyleSheet,
+    Text,
+    TouchableOpacity,
+    View
+} from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Colors } from '../constants/theme';
 import { useAuth } from '../context/AuthContext';
+import { DrawerContentScrollView } from 'expo-router/drawer';
 
-export default function Profile() {
-  const router = useRouter();
-  const { user, isLoading, logout } = useAuth();
+export default function Profile(props?: any) {
+    const router = useRouter();
+    const navigation = props?.navigation || useNavigation();
+    const insets = useSafeAreaInsets();
+    const { user, isLoading, logout } = useAuth();
+    const [isLoggingOut, setIsLoggingOut] = useState(false);
 
-  // 1. Add local state to manage the logout loading spinner
-  const [isLoggingOut, setIsLoggingOut] = useState(false);
+    const closeDrawer = () => {
+        if (navigation) {
+            navigation.dispatch({ type: 'CLOSE_DRAWER' });
+        }
+    };
 
-  const handleLogout = async () => {
-    setIsLoggingOut(true); // Start spinner
-    try {
-      await logout(); // Clears user state and SecureStore
+    const handleLogout = async () => {
+        setIsLoggingOut(true);
+        try {
+            await logout();
+            closeDrawer();
+            if (typeof router.canDismiss === 'function' && router.canDismiss()) {
+                router.dismissAll();
+            }
+            router.replace('/login');
+        } catch (error) {
+            console.error('Logout error:', error);
+            Alert.alert('Error', 'Failed to log out. Please try again.');
+        } finally {
+            setIsLoggingOut(false);
+        }
+    };
 
-      // 2. Clear the entire navigation history stack before replacing the route
-      if (router.canDismiss()) {
-        router.dismissAll();
-      }
-      router.replace('/login');
+    const navigateTo = (route: string) => {
+        closeDrawer();
+        // Small delay so drawer close animation doesn't clash with navigation
+        setTimeout(() => router.push(route as any), 200);
+    };
 
-    } catch (error) {
-      Alert.alert('Error', 'Failed to log out properly.');
-      setIsLoggingOut(false); // Stop spinner if it fails
+    if (isLoading || isLoggingOut) {
+        return (
+            <View style={[styles.container, styles.centered]}>
+                <ActivityIndicator size="large" color={Colors.light.primary} />
+            </View>
+        );
     }
-  };
 
-  // 3. Show spinner if context is loading OR if user is logging out
-  if (isLoading || isLoggingOut) {
+    const serverBaseUrl = process.env.EXPO_PUBLIC_API_URL?.split('/api')[0] ?? '';
+    const avatarPath = user?.avatar?.trim();
+    const avatarSource =
+        avatarPath
+            ? {
+                  uri: avatarPath.startsWith('http')
+                      ? avatarPath
+                      : `${serverBaseUrl}${avatarPath.startsWith('/') ? '' : '/'}${avatarPath}`,
+              }
+            : require('../../assets/images/defaultAvatarPlaceholder.png');
+
     return (
-      <View style={[styles.container, { justifyContent: 'center', alignItems: 'center' }]}>
-        <ActivityIndicator size="large" color={Colors.light.primary} />
-      </View>
+        <DrawerContentScrollView {...props} contentContainerStyle={[styles.container, { paddingTop: insets.top || 20 }]}>
+
+            {/* ── Close handle ── */}
+            <TouchableOpacity style={styles.closeRow} onPress={closeDrawer} activeOpacity={0.7}>
+                <Ionicons name="close" size={22} color={Colors.light.secondaryText} />
+            </TouchableOpacity>
+
+            {/* ── Avatar + name ── */}
+            <View style={styles.profileSection}>
+                <View style={styles.avatarWrapper}>
+                    <Image source={avatarSource} style={styles.avatar} />
+                    {/* Online indicator dot */}
+                    <View style={styles.onlineDot} />
+                </View>
+
+                <Text style={styles.name}>{user?.name ?? 'Driver'}</Text>
+
+                {user?.phone ? (
+                    <Text style={styles.subText}>{user.phone}</Text>
+                ) : null}
+
+                {user?.email?.trim() ? (
+                    <Text style={styles.subText}>{user.email}</Text>
+                ) : null}
+
+                {/* Driver badge */}
+                <View style={styles.driverBadge}>
+                    <Ionicons name="car" size={12} color={Colors.light.primary} />
+                    <Text style={styles.driverBadgeText}>Driver</Text>
+                </View>
+            </View>
+
+            <View style={styles.divider} />
+
+            {/* ── Menu items ── */}
+            <ScrollView
+                style={styles.menu}
+                showsVerticalScrollIndicator={false}
+                contentContainerStyle={{ paddingBottom: 16 }}
+            >
+                <MenuItem
+                    icon="time-outline"
+                    label="Trip History"
+                    onPress={() => navigateTo('/trip_history')}
+                />
+                <MenuItem
+                    icon="settings-outline"
+                    label="Settings"
+                    onPress={() => {}}
+                />
+                <MenuItem
+                    icon="help-circle-outline"
+                    label="Help & Support"
+                    onPress={() => {}}
+                />
+            </ScrollView>
+
+            {/* ── Logout ── */}
+            <View style={[styles.footer, { paddingBottom: Math.max(insets.bottom, 24) }]}>
+                <TouchableOpacity style={styles.logoutButton} onPress={handleLogout} activeOpacity={0.85}>
+                    <Ionicons name="log-out-outline" size={18} color="#fff" />
+                    <Text style={styles.logoutText}>Logout</Text>
+                </TouchableOpacity>
+            </View>
+        </DrawerContentScrollView>
     );
-  }
-
-  const serverBaseUrl = process.env.EXPO_PUBLIC_API_URL?.replace('/api', '') || '';
-
-  const getAvatarSource = () => {
-    if (user?.avatar && user.avatar.trim() !== '') {
-      const uri = user.avatar.startsWith('http')
-        ? user.avatar
-        : `${serverBaseUrl}${user.avatar}`;
-      return { uri };
-    }
-    return require('../../assets/images/defaultAvatarPlaceholder.png');
-  };
-
-  return (
-    <View style={styles.container}>
-
-      <View style={{ flex: 1, paddingTop: 40, paddingHorizontal: 20, backgroundColor: Colors.light.background }}>
-        
-        <View style={{ alignItems: 'center', marginBottom: 20, paddingBottom: 24, borderBottomWidth: 1, borderBottomColor: Colors.light.border }}>
-          <Image
-            source={getAvatarSource()}
-            style={{ width: 90, height: 90, borderRadius: 45, marginBottom: 16, borderWidth: 3, borderColor: Colors.light.primary }}
-          />
-          <Text style={{ fontSize: 24, fontWeight: '700', color: Colors.light.text, marginBottom: 4 }}>
-            {user?.name || 'User'}
-          </Text>
-          <Text style={{ fontSize: 14, color: Colors.light.secondaryText }}>
-            {user?.email && user.email.trim() !== '' ? user.email : 'Link your email'}
-          </Text>
-        </View>
-
-        <ScrollView contentContainerStyle={{ flexGrow: 1 }} showsVerticalScrollIndicator={false}>
-          <View style={{ marginBottom: 20 }}>
-            <TouchableOpacity style={[styles.menuItem, { paddingHorizontal: 0, borderBottomWidth: 1, borderBottomColor: Colors.light.border }]} onPress={() => router.push('/trip_history')}>
-              <View style={styles.menuIconContainer}>
-                <Ionicons name="time-outline" size={20} color={Colors.light.primary} />
-              </View>
-              <Text style={styles.menuText}>Trip History</Text>
-              <Ionicons name="chevron-forward" size={18} color={Colors.light.icon} />
-            </TouchableOpacity>
-
-            <TouchableOpacity style={[styles.menuItem, { paddingHorizontal: 0, borderBottomWidth: 1, borderBottomColor: Colors.light.border }]}>
-              <View style={styles.menuIconContainer}>
-                <Ionicons name="settings-outline" size={20} color={Colors.light.primary} />
-              </View>
-              <Text style={styles.menuText}>Settings</Text>
-              <Ionicons name="chevron-forward" size={18} color={Colors.light.icon} />
-            </TouchableOpacity>
-
-            <TouchableOpacity style={[styles.menuItem, { paddingHorizontal: 0 }]}>
-              <View style={styles.menuIconContainer}>
-                <Ionicons name="help-circle-outline" size={20} color={Colors.light.primary} />
-              </View>
-              <Text style={styles.menuText}>Help & Support</Text>
-              <Ionicons name="chevron-forward" size={18} color={Colors.light.icon} />
-            </TouchableOpacity>
-          </View>
-        </ScrollView>
-
-        {/* Fixed Bottom Section for Logout */}
-        <View style={{ paddingTop: 16, paddingBottom: 32 }}>
-          <TouchableOpacity
-            style={{ 
-              flexDirection: 'row',
-              alignItems: 'center',
-              justifyContent: 'center',
-              paddingVertical: 14, 
-              borderRadius: 12, 
-              backgroundColor: Colors.light.red 
-            }}
-            onPress={handleLogout}
-          >
-            <Ionicons name="log-out-outline" size={20} color="#FFFFFF" style={{ marginRight: 8 }} />
-            <Text style={{ color: '#FFFFFF', fontWeight: '700', fontSize: 16 }}>Logout</Text>
-          </TouchableOpacity>
-        </View>
-      </View>
-    </View>
-  );
 }
+
+// ─── MenuItem sub-component ───────────────────────────────────────────────────
+
+function MenuItem({
+    icon,
+    label,
+    onPress,
+}: {
+    icon: keyof typeof Ionicons.glyphMap;
+    label: string;
+    onPress: () => void;
+}) {
+    return (
+        <TouchableOpacity style={styles.menuItem} onPress={onPress} activeOpacity={0.7}>
+            <View style={styles.menuIconBox}>
+                <Ionicons name={icon} size={20} color={Colors.light.primary} />
+            </View>
+            <Text style={styles.menuLabel}>{label}</Text>
+            <Ionicons name="chevron-forward" size={16} color={Colors.light.secondaryText} />
+        </TouchableOpacity>
+    );
+}
+
+// ─── Styles ───────────────────────────────────────────────────────────────────
+
+const styles = StyleSheet.create({
+    container: {
+        flex: 1,
+        backgroundColor: Colors.light.background,
+    },
+    centered: {
+        justifyContent: 'center',
+        alignItems: 'center',
+    },
+
+    // Close button row
+    closeRow: {
+        paddingHorizontal: 20,
+        paddingVertical: 8,
+        alignSelf: 'flex-end',
+    },
+
+    // Profile section
+    profileSection: {
+        alignItems: 'center',
+        paddingHorizontal: 20,
+        paddingTop: 8,
+        paddingBottom: 24,
+    },
+    avatarWrapper: {
+        position: 'relative',
+        marginBottom: 14,
+    },
+    avatar: {
+        width: 88,
+        height: 88,
+        borderRadius: 44,
+        borderWidth: 3,
+        borderColor: Colors.light.primary,
+    },
+    onlineDot: {
+        position: 'absolute',
+        bottom: 2,
+        right: 2,
+        width: 16,
+        height: 16,
+        borderRadius: 8,
+        backgroundColor: Colors.light.primary,
+        borderWidth: 2,
+        borderColor: Colors.light.background,
+    },
+    name: {
+        fontSize: 20,
+        fontWeight: '700',
+        color: Colors.light.text,
+        marginBottom: 4,
+        textAlign: 'center',
+    },
+    subText: {
+        fontSize: 13,
+        color: Colors.light.secondaryText,
+        marginBottom: 2,
+        textAlign: 'center',
+    },
+    driverBadge: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 5,
+        marginTop: 10,
+        backgroundColor: Colors.light.success,
+        paddingHorizontal: 12,
+        paddingVertical: 5,
+        borderRadius: 20,
+    },
+    driverBadgeText: {
+        fontSize: 12,
+        fontWeight: '700',
+        color: Colors.light.primary,
+    },
+
+    divider: {
+        height: 1,
+        backgroundColor: Colors.light.border,
+        marginHorizontal: 20,
+        marginBottom: 8,
+    },
+
+    // Menu
+    menu: {
+        flex: 1,
+        paddingHorizontal: 16,
+        paddingTop: 8,
+    },
+    menuItem: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        paddingVertical: 14,
+        paddingHorizontal: 8,
+        borderRadius: 12,
+        gap: 12,
+        marginBottom: 2,
+    },
+    menuIconBox: {
+        width: 38,
+        height: 38,
+        borderRadius: 19,
+        backgroundColor: Colors.light.success,
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    menuLabel: {
+        flex: 1,
+        fontSize: 15,
+        fontWeight: '500',
+        color: Colors.light.text,
+    },
+
+    // Logout
+    footer: {
+        paddingHorizontal: 20,
+        paddingTop: 12,
+        borderTopWidth: 1,
+        borderTopColor: Colors.light.border,
+    },
+    logoutButton: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 8,
+        backgroundColor: Colors.light.red,
+        borderRadius: 12,
+        paddingVertical: 14,
+    },
+    logoutText: {
+        color: '#fff',
+        fontSize: 15,
+        fontWeight: '700',
+    },
+});

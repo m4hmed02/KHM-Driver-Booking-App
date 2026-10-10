@@ -76,6 +76,15 @@ exports.getBookingStatus = async (req, res) => {
   }
 };
 
+exports.deleteBooking = async (req, res) => {
+  try {
+    await bookingService.deleteBooking(req.params.id, req.user.id);
+    res.status(204).end();
+  } catch (error) {
+    res.status(error.statusCode || 500).json({ message: error.message });
+  }
+};
+
 exports.updateBookingStatus = async (req, res) => {
   try {
     const booking = await bookingService.updateBookingStatus(req.params.id, req.body.status);

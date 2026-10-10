@@ -21,6 +21,7 @@ const bookingSchema = new mongoose.Schema({
     default: 'driver_now',
   },
   scheduledTime: { type: Date, default: null },
+  expiresAt: { type: Date, default: null },
 
   vehicleInfo: {
     make: String,
@@ -44,5 +45,7 @@ const bookingSchema = new mongoose.Schema({
     default: 'requesting',
   },
 }, { timestamps: true });
+
+bookingSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
 
 module.exports = mongoose.model('Booking', bookingSchema);

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { View, Text, TouchableOpacity, Platform, ScrollView, StyleSheet, Dimensions, ActivityIndicator, Linking, AppState, Alert, Animated, Image } from 'react-native';
 import { MaterialCommunityIcons, Ionicons } from '@expo/vector-icons';
 import MapView, { Marker, Polyline } from 'react-native-maps';
@@ -14,7 +14,7 @@ import { useRouter, useNavigation } from 'expo-router';
 import { useRoute } from '../hooks/useRoute';
 import { calculateFareApi } from '../services/apis/fares/fareService';
 import { CalculateFareResponse } from '../services/apis/fares/type';
-import { createBookingApi, updateBookingStatusApi, getBookingStatusApi, acceptDriverOfferApi, rejectDriverOfferApi } from '../services/apis/booking/bookingService';
+import { createBookingApi, deleteBookingApi, getBookingStatusApi, acceptDriverOfferApi, rejectDriverOfferApi } from '../services/apis/booking/bookingService';
 import { Booking, Offer } from '../services/apis/booking/type';
 
 const getAvatarUrl = (path?: string | null) => {
@@ -91,6 +91,20 @@ export default function Home() {
     };
 
     const isButtonDisabled = !pickup.trim() || !dropoff.trim();
+
+    const clearBookingState = useCallback((bookingId: string) => {
+        if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+        if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+        if (searchIntervalRef.current) clearInterval(searchIntervalRef.current);
+        if (offerTimerRef.current) clearTimeout(offerTimerRef.current);
+        if (offerIntervalRef.current) clearInterval(offerIntervalRef.current);
+        shownOfferIds.current.clear();
+        setActiveBooking(current => current?._id === bookingId ? null : current);
+        setFareResult(null);
+        setFareAdjustment(0);
+        setSearchTimedOut(false);
+        setPendingOffer(null);
+    }, []);
 
     // Spin animation for the location-loading marker icon
     useEffect(() => {
@@ -335,13 +349,11 @@ export default function Home() {
     const handleRejectOffer = async () => {
         if (!activeBooking || !pendingOffer) return;
         setIsOfferLoading(true);
-        if (offerTimerRef.current) clearTimeout(offerTimerRef.current);
-        if (offerIntervalRef.current) clearInterval(offerIntervalRef.current);
         try {
-            await rejectDriverOfferApi(activeBooking._id, (pendingOffer.driver as any)._id ?? pendingOffer.driver);
-            setPendingOffer(null);
-        } catch {
-            setPendingOffer(null);
+            await deleteBookingApi(activeBooking._id);
+            clearBookingState(activeBooking._id);
+        } catch (err) {
+            Alert.alert('Could not delete request', err instanceof Error ? err.message : 'Please try again.');
         } finally {
             setIsOfferLoading(false);
         }
@@ -387,22 +399,16 @@ export default function Home() {
     const handleCancelRide = async () => {
         if (!activeBooking) return;
         try {
-            await updateBookingStatusApi(activeBooking._id, 'cancelled');
-        } catch { /* best-effort */ }
-        if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
-        if (offerTimerRef.current) clearTimeout(offerTimerRef.current);
-        if (offerIntervalRef.current) clearInterval(offerIntervalRef.current);
-        shownOfferIds.current.clear();
-        setActiveBooking(null);
-        setFareResult(null);
-        setFareAdjustment(0);
-        setSearchTimedOut(false);
-        setPendingOffer(null);
+            await deleteBookingApi(activeBooking._id);
+            clearBookingState(activeBooking._id);
+        } catch (err) {
+            Alert.alert('Could not delete request', err instanceof Error ? err.message : 'Please try again.');
+        }
     };
 
-    // 60-second search progress bar
+    // Delete requests that remain unanswered after two minutes.
     useEffect(() => {
-        if (activeBooking) {
+        if (activeBooking?.status === 'requesting') {
             setSearchTimedOut(false);
             setSearchSecondsLeft(120);
             searchProgress.setValue(1);
@@ -410,10 +416,17 @@ export default function Home() {
                 toValue: 0,
                 duration: 120000,
                 useNativeDriver: false,
-            }).start(({ finished }) => {
-                if (finished) setSearchTimedOut(true);
-            });
-            searchTimerRef.current = setTimeout(() => setSearchTimedOut(true), 120000);
+            }).start();
+            searchTimerRef.current = setTimeout(async () => {
+                try {
+                    await deleteBookingApi(activeBooking._id);
+                    clearBookingState(activeBooking._id);
+                    Alert.alert('Request expired', 'The ride request was removed because no driver accepted it.');
+                } catch (err) {
+                    setSearchTimedOut(true);
+                    Alert.alert('Could not delete request', err instanceof Error ? err.message : 'Please try again.');
+                }
+            }, 120000);
             searchIntervalRef.current = setInterval(() => {
                 setSearchSecondsLeft(s => {
                     if (s <= 1) {
@@ -435,7 +448,7 @@ export default function Home() {
             if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
             if (searchIntervalRef.current) clearInterval(searchIntervalRef.current);
         };
-    }, [activeBooking]);
+    }, [activeBooking, clearBookingState]);
 
     // Water-drop entrance animation for the offer card
     useEffect(() => {
@@ -1212,36 +1225,17 @@ export default function Home() {
 
                         {/* Action buttons */}
                         {searchTimedOut ? (
-                            <View style={{ flexDirection: 'row', gap: 10 }}>
-                                <TouchableOpacity
-                                    onPress={handleCancelRide}
-                                    activeOpacity={0.8}
-                                    style={{
-                                        flex: 1, height: 48, borderRadius: 12,
-                                        borderWidth: 1.5, borderColor: Colors.light.red,
-                                        justifyContent: 'center', alignItems: 'center',
-                                    }}
-                                >
-                                    <Text style={{ fontSize: 14, fontWeight: '600', color: Colors.light.red }}>Cancel Ride</Text>
-                                </TouchableOpacity>
-                                <TouchableOpacity
-                                    onPress={() => {
-                                        // Hide the timed-out banner and go back to the
-                                        // searching state. The progress bar stays at 0
-                                        // and the countdown stays at 00:00 — polling
-                                        // continues until the user explicitly cancels.
-                                        setSearchTimedOut(false);
-                                    }}
-                                    activeOpacity={0.8}
-                                    style={{
-                                        flex: 1, height: 48, borderRadius: 12,
-                                        backgroundColor: Colors.light.primary,
-                                        justifyContent: 'center', alignItems: 'center',
-                                    }}
-                                >
-                                    <Text style={{ fontSize: 14, fontWeight: '600', color: '#FFFFFF' }}>Keep Searching</Text>
-                                </TouchableOpacity>
-                            </View>
+                            <TouchableOpacity
+                                onPress={handleCancelRide}
+                                activeOpacity={0.8}
+                                style={{
+                                    height: 48, borderRadius: 12,
+                                    borderWidth: 1.5, borderColor: Colors.light.red,
+                                    justifyContent: 'center', alignItems: 'center',
+                                }}
+                            >
+                                <Text style={{ fontSize: 14, fontWeight: '600', color: Colors.light.red }}>Retry Delete</Text>
+                            </TouchableOpacity>
                         ) : (
                             <TouchableOpacity
                                 onPress={handleCancelRide}

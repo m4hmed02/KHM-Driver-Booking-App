@@ -1,10 +1,9 @@
-import React from 'react';
-import { View, Text, FlatList, TouchableOpacity } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
-import { Colors } from '../constants/theme';
-import { TripHistoryCard } from '../components/TripHistoryCard';
+import { FlatList, Text, TouchableOpacity, View } from 'react-native';
 import { Header } from '../components/Header';
+import { TripHistoryCard } from '../components/TripHistoryCard';
+import { Colors } from '../constants/theme';
 import { styles } from '../styles/trip_history.styles';
 
 const MOCK_TRIPS = [
@@ -71,7 +70,7 @@ export default function TripHistory() {
 
       {/* Bottom Navigation */}
       <View style={styles.bottomNav}>
-        <TouchableOpacity style={styles.navItem} onPress={() => router.push('/location_picker')}>
+        <TouchableOpacity style={styles.navItem} onPress={() => router.replace('/home')}>
           <Ionicons name="home-outline" size={24} color={Colors.light.icon} />
           <Text style={[styles.navText, { color: Colors.light.icon }]}>Home</Text>
         </TouchableOpacity>

@@ -1,17 +1,36 @@
+import * as NavigationBar from 'expo-navigation-bar';
 import { DarkTheme, DefaultTheme, ThemeProvider } from 'expo-router';
 import { Drawer } from 'expo-router/drawer';
 import * as SplashScreen from 'expo-splash-screen';
-import { useColorScheme } from 'react-native';
-import { useEffect } from 'react';
-import { SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
-import * as NavigationBar from 'expo-navigation-bar';
-import { AuthProvider } from '../context/AuthContext';
+import { useEffect } from 'react';
+import { useColorScheme } from 'react-native';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
+import { AuthProvider, useAuth } from '../context/AuthContext';
+import { connectSocket, disconnectSocket } from '../services/socket';
 import Profile from './profile';
 
 SplashScreen.preventAutoHideAsync();
 
-export default function TabLayout() {
+/**
+ * Manages the Socket.io connection lifecycle tied to auth state.
+ * Connects when a logged-in user is present; disconnects on logout.
+ */
+function SocketManager() {
+  const { user } = useAuth();
+
+  useEffect(() => {
+    if (user?.token) {
+      connectSocket(user.token);
+    } else {
+      disconnectSocket();
+    }
+  }, [user?.token]);
+
+  return null;
+}
+
+export default function RootLayout() {
   const colorScheme = useColorScheme();
 
   useEffect(() => {
@@ -23,9 +42,11 @@ export default function TabLayout() {
   }, []);
 
   return (
-    <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
-      <AuthProvider>
-        <SafeAreaView style={{ flex: 1 }} edges={['bottom']}>
+    // GestureHandlerRootView MUST wrap the entire tree — especially the Drawer navigator
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
+        <AuthProvider>
+          <SocketManager />
           <StatusBar hidden={true} />
           <Drawer
             screenOptions={{
@@ -34,19 +55,23 @@ export default function TabLayout() {
                 width: '70%',
                 borderTopRightRadius: 24,
                 borderBottomRightRadius: 24,
-                overflow: 'hidden'
-              }
+                overflow: 'hidden',
+              },
             }}
-            drawerContent={() => <Profile />}
+            drawerContent={(props) => <Profile {...props} />}
           >
-            <Drawer.Screen name='index' />
-            <Drawer.Screen name='home' />
-            <Drawer.Screen name='profile' options={{ drawerItemStyle: { display: 'none' } }} />
-            <Drawer.Screen name='trip_history' />
-            <Drawer.Screen name='trip_completed' />
+            <Drawer.Screen name="index" />
+            <Drawer.Screen name="home" />
+            <Drawer.Screen name="active_ride" options={{ drawerItemStyle: { display: 'none' } }} />
+            <Drawer.Screen name="profile" options={{ drawerItemStyle: { display: 'none' } }} />
+            <Drawer.Screen name="trip_history" />
+            <Drawer.Screen
+              name="trip_completed"
+              options={{ drawerItemStyle: { display: 'none' } }}
+            />
           </Drawer>
-        </SafeAreaView>
-      </AuthProvider>
-    </ThemeProvider>
+        </AuthProvider>
+      </ThemeProvider>
+    </GestureHandlerRootView>
   );
 }

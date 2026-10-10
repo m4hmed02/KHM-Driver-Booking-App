@@ -4,6 +4,7 @@ const {
   createBooking,
   getAvailableBookings,
   getBookingStatus,
+  deleteBooking,
   updateBookingStatus,
   makeDriverOffer,
   acceptDriverOffer
@@ -12,6 +13,7 @@ const { protect } = require('../middleware/authMiddleware');
 
 router.post('/', protect, createBooking);
 router.get('/available', protect, getAvailableBookings);
+router.delete('/:id', protect, deleteBooking);
 router.get('/:id', protect, getBookingStatus);
 router.patch('/:id/status', protect, updateBookingStatus);
 
