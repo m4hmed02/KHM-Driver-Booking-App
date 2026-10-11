@@ -370,6 +370,9 @@ export default function Home() {
 
         const socket = connectSocket(user.token);
 
+        // Register with the server so it can map userId → socketId for targeted events
+        socket.emit('register' as any, user._id);
+
         // ── Catch-all: log EVERY event so we can see the real event name in Metro logs
         const debugListener = (eventName: string, ...args: any[]) => {
             console.warn(
@@ -407,15 +410,21 @@ export default function Home() {
         socket.on('newBooking', handleNewBooking);
         socket.on('rideRequest', handleNewBooking);
 
-        socket.on('offer_accepted', (payload) => {
-            if (payload.driverId !== user._id) return;
+        socket.on('offer_accepted', (payload: any) => {
+            // Payload may be: { bookingId, driverId, booking } OR the full booking object
+            const bookingId = payload?.bookingId ?? payload?._id;
+            const driverId = payload?.driverId ?? payload?.driver?._id ?? payload?.driver;
+            // Accept if the payload matches this driver (or if no driverId in payload, still accept)
+            if (driverId && driverId !== user._id) return;
             setOfferModalVisible(false);
             setSelectedRide(null);
-            setRides((prev) => prev.filter((r) => r._id !== payload.bookingId));
-            router.push({
-                pathname: '/active_ride',
-                params: { bookingId: payload.bookingId },
-            });
+            setRides((prev) => prev.filter((r) => r._id !== bookingId));
+            if (bookingId) {
+                router.push({
+                    pathname: '/active_ride',
+                    params: { bookingId },
+                });
+            }
         });
 
         socket.on('offer_rejected', (payload) => {
@@ -482,6 +491,7 @@ export default function Home() {
             socket.off('booking_status_updated');
         };
     }, [user]);
+
 
     // ── Fetch available rides ─────────────────────────────────────────────────
 

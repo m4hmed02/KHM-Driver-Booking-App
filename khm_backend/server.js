@@ -16,9 +16,45 @@ const connectedUsers = new Map(); // userId -> socketId
 io.on('connection', (socket) => {
   console.log('User connected:', socket.id);
 
+  // ── Auth registration ────────────────────────────────────────────────────────
   socket.on('register', (userId) => {
     connectedUsers.set(userId, socket.id);
     console.log(`User ${userId} registered with socket ${socket.id}`);
+  });
+
+  // ── Driver real-time location updates ────────────────────────────────────────
+  // Driver app emits: { bookingId, latitude, longitude }
+  // We forward to the customer of that booking
+  socket.on('driver_location_update', async (data) => {
+    try {
+      const { bookingId, latitude, longitude, customerId } = data;
+      if (!bookingId || latitude == null || longitude == null) return;
+
+      // If customerId is provided directly, use it; otherwise look up the booking
+      if (customerId) {
+        const customerSocketId = connectedUsers.get(customerId.toString());
+        if (customerSocketId) {
+          io.to(customerSocketId).emit('driver_location_update', { bookingId, latitude, longitude });
+        }
+      }
+    } catch (err) {
+      console.error('[Socket] driver_location_update error:', err.message);
+    }
+  });
+
+  // ── Customer "I'm Coming" acknowledgement ────────────────────────────────────
+  // Customer emits: { bookingId, driverId }
+  socket.on('customer_coming', (data) => {
+    try {
+      const { bookingId, driverId } = data;
+      if (!driverId || !bookingId) return;
+      const driverSocketId = connectedUsers.get(driverId.toString());
+      if (driverSocketId) {
+        io.to(driverSocketId).emit('customer_coming', { bookingId });
+      }
+    } catch (err) {
+      console.error('[Socket] customer_coming error:', err.message);
+    }
   });
 
   socket.on('disconnect', () => {

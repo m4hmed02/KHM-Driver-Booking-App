@@ -2,7 +2,7 @@
  * Socket.io singleton for the Driver App.
  *
  * Usage:
- *   import { getSocket, connectSocket, disconnectSocket } from '@/services/socket';
+ *   import { getSocket, connectSocket, disconnectSocket, emitDriverLocation } from '@/services/socket';
  *
  *   // Connect once the user is authenticated (pass the JWT token):
  *   connectSocket(token);
@@ -10,6 +10,9 @@
  *   // Subscribe to events anywhere in the app:
  *   const socket = getSocket();
  *   socket.on('new_booking', (booking) => { ... });
+ *
+ *   // Emit driver location during an active ride:
+ *   emitDriverLocation(bookingId, customerId, latitude, longitude);
  *
  *   // Clean up on logout:
  *   disconnectSocket();
@@ -36,9 +39,14 @@ export interface BookingStatusUpdatedPayload {
     bookingId: string;
     status: Booking['status'];
     booking?: Booking;
+    customerId?: string;
 }
 
 export interface BookingDeletedPayload {
+    bookingId: string;
+}
+
+export interface CustomerComingPayload {
     bookingId: string;
 }
 
@@ -52,7 +60,7 @@ export interface ServerToClientEvents {
     newBooking: (booking: Booking) => void;
     rideRequest: (booking: Booking) => void;
     // The customer accepted this driver's offer
-    offer_accepted: (payload: OfferAcceptedPayload) => void;
+    offer_accepted: (payload: OfferAcceptedPayload | Booking) => void;
     // The customer rejected this driver's offer
     offer_rejected: (payload: OfferRejectedPayload) => void;
     // A booking's status changed (useful for staying in sync)
@@ -62,6 +70,8 @@ export interface ServerToClientEvents {
     booking_cancelled: (payload: BookingDeletedPayload) => void;
     booking_request_cancelled: (payload: BookingDeletedPayload) => void;
     booking_request_deleted: (payload: BookingDeletedPayload) => void;
+    // Customer is on their way to the pickup (sent after driver marks "arrived")
+    customer_coming: (payload: CustomerComingPayload) => void;
 }
 
 // ─── Singleton management ────────────────────────────────────────────────────
@@ -113,6 +123,20 @@ export const connectSocket = (token: string): Socket<ServerToClientEvents> => {
  * Get the current socket instance. Returns null if not connected.
  */
 export const getSocket = (): Socket<ServerToClientEvents> | null => socket;
+
+/**
+ * Emit the driver's current GPS position to the customer.
+ * Call this inside a Location.watchPositionAsync subscription.
+ */
+export const emitDriverLocation = (
+    bookingId: string,
+    customerId: string,
+    latitude: number,
+    longitude: number,
+): void => {
+    if (!socket?.connected) return;
+    socket.emit('driver_location_update' as any, { bookingId, customerId, latitude, longitude });
+};
 
 /**
  * Disconnect and destroy the socket. Call on logout.

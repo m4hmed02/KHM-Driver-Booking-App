@@ -122,3 +122,23 @@ exports.updateBookingStatus = async (bookingId, status) => {
   .populate('customer', 'name phone avatar');
   return booking;
 };
+
+exports.rejectDriverOffer = async (bookingId, customerId, driverId) => {
+  const booking = await Booking.findById(bookingId);
+
+  if (!booking || booking.customer.toString() !== customerId.toString()) {
+    const error = new Error('Unauthorized or booking not found');
+    error.statusCode = 403;
+    throw error;
+  }
+
+  const offerIndex = booking.offers.findIndex(o => o.driver.toString() === driverId.toString());
+  if (offerIndex >= 0) {
+    booking.offers[offerIndex].status = 'rejected';
+    await booking.save();
+  }
+
+  return await Booking.findById(bookingId)
+    .populate('offers.driver', 'name phone avatar rating')
+    .populate('customer', 'name phone avatar');
+};

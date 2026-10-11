@@ -10,7 +10,7 @@ export default function TripCompleted() {
   const [rating, setRating] = useState(0);
 
   const navigateHome = () => {
-    router.push('/location_picker');
+    router.replace('/home');
   };
 
   return (

@@ -16,6 +16,8 @@ import { calculateFareApi } from '../services/apis/fares/fareService';
 import { CalculateFareResponse } from '../services/apis/fares/type';
 import { createBookingApi, deleteBookingApi, getBookingStatusApi, acceptDriverOfferApi, rejectDriverOfferApi } from '../services/apis/booking/bookingService';
 import { Booking, Offer } from '../services/apis/booking/type';
+import { connectSocket, emitCustomerComing } from '../services/socket';
+import { useAuth } from '../context/AuthContext';
 
 const getAvatarUrl = (path?: string | null) => {
     if (!path) return 'https://ui-avatars.com/api/?name=Driver&background=random';
@@ -31,6 +33,7 @@ export default function Home() {
     const theme = useTheme();
     const router = useRouter();
     const navigation = useNavigation();
+    const { user } = useAuth();
     const [pickup, setPickup] = useState('');
     const [dropoff, setDropoff] = useState('');
     const [pickupCoordinate, setPickupCoordinate] = useState<{latitude: number, longitude: number} | null>(null);
@@ -65,6 +68,7 @@ export default function Home() {
     const [driverArriving, setDriverArriving] = useState(false);
     const [driverLocation, setDriverLocation] = useState<{latitude: number, longitude: number} | null>(null);
     const [acceptedDriver, setAcceptedDriver] = useState<any | null>(null);
+    const [acceptedDriverId, setAcceptedDriverId] = useState<string | null>(null);
     const [driverArrived, setDriverArrived] = useState(false);
     const [tripInProgress, setTripInProgress] = useState(false);
     const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -80,6 +84,7 @@ export default function Home() {
     const sheetRef = useRef<DraggableBottomSheetRef>(null);
     const spinAnim = useRef(new Animated.Value(0)).current;
     const [trackMarker, setTrackMarker] = useState(true);
+    const lastRouteUpdateRef = useRef<{ lat: number; lng: number; time: number } | null>(null);
 
     const [initialRegion, setInitialRegion] = useState<{latitude: number, longitude: number, latitudeDelta: number, longitudeDelta: number} | null>(null);
 
@@ -104,6 +109,12 @@ export default function Home() {
         setFareAdjustment(0);
         setSearchTimedOut(false);
         setPendingOffer(null);
+        setAcceptedDriver(null);
+        setAcceptedDriverId(null);
+        setDriverArriving(false);
+        setDriverArrived(false);
+        setTripInProgress(false);
+        setDriverLocation(null);
     }, []);
 
     // Spin animation for the location-loading marker icon
@@ -306,22 +317,14 @@ export default function Home() {
         if (!activeBooking || !pendingOffer) return;
         setIsOfferLoading(true);
         try {
-            await acceptDriverOfferApi(activeBooking._id, (pendingOffer.driver as any)._id ?? pendingOffer.driver);
+            const driverId = (pendingOffer.driver as any)._id ?? pendingOffer.driver;
+            const updatedBooking = await acceptDriverOfferApi(activeBooking._id, driverId);
             if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
-            setActiveBooking({ ...activeBooking, status: 'accepted' });
-            
+            setActiveBooking(updatedBooking);
             setAcceptedDriver(pendingOffer.driver);
-            if (pickupCoordinate) {
-                 const dLoc = {
-                     latitude: pickupCoordinate.latitude - 0.005,
-                     longitude: pickupCoordinate.longitude - 0.005
-                 };
-                 setDriverLocation(dLoc);
-                 fetchRoute(dLoc, pickupCoordinate);
-            }
+            setAcceptedDriverId(driverId);
             setDriverArriving(true);
             setPendingOffer(null);
-            
             if (offerTimerRef.current) clearTimeout(offerTimerRef.current);
             if (offerIntervalRef.current) clearInterval(offerIntervalRef.current);
             if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
@@ -345,6 +348,80 @@ export default function Home() {
             }
         }
     }, [driverArriving, tripInProgress, pickupCoordinate, dropoffCoordinate, driverLocation]);
+
+    // ── Real-time socket: driver location + booking status updates ─────────────
+    useEffect(() => {
+        if (!user?.token || !activeBooking) return;
+
+        const socket = connectSocket(user.token, user._id);
+
+        // Register so backend maps userId → socketId
+        socket.emit('register' as any, user._id);
+
+        // Driver location updates → move driver marker on map
+        const handleDriverLocation = (payload: { bookingId: string; latitude: number; longitude: number }) => {
+            if (payload.bookingId !== activeBooking._id) return;
+            const newLoc = { latitude: payload.latitude, longitude: payload.longitude };
+            setDriverLocation(newLoc);
+
+            // Throttle route recalculation: only if driver has moved > 50m or 15s elapsed
+            const now = Date.now();
+            const last = lastRouteUpdateRef.current;
+            const targetDest = tripInProgress ? dropoffCoordinate : pickupCoordinate;
+
+            if (!targetDest) return;
+
+            const shouldUpdateRoute =
+                !last ||
+                now - last.time > 15000 ||
+                Math.abs(newLoc.latitude - last.lat) > 0.00045 ||
+                Math.abs(newLoc.longitude - last.lng) > 0.00045;
+
+            if (shouldUpdateRoute) {
+                lastRouteUpdateRef.current = { lat: newLoc.latitude, lng: newLoc.longitude, time: now };
+                fetchRoute(newLoc, targetDest);
+            }
+        };
+
+        // Booking status changes from the driver
+        const handleStatusUpdate = (payload: any) => {
+            const bookingId = payload._id || payload.bookingId;
+            if (bookingId && bookingId !== activeBooking._id) return;
+
+            const newStatus = payload.status;
+            if (!newStatus) return;
+
+            if (newStatus === 'arriving') {
+                // Driver arrived at pickup
+                setDriverArrived(true);
+                setActiveBooking((prev: any) => prev ? { ...prev, status: 'arriving' } : prev);
+            } else if (newStatus === 'started') {
+                // Ride started — switch map to show route to dropoff
+                lastRouteUpdateRef.current = null;
+                setTripInProgress(true);
+                setDriverArrived(false);
+                setActiveBooking((prev: any) => prev ? { ...prev, status: 'started' } : prev);
+                if (driverLocation && dropoffCoordinate) {
+                    fetchRoute(driverLocation, dropoffCoordinate);
+                } else if (dropoffCoordinate && pickupCoordinate) {
+                    fetchRoute(pickupCoordinate, dropoffCoordinate);
+                }
+            } else if (newStatus === 'completed') {
+                // Ride complete
+                setActiveBooking((prev: any) => prev ? { ...prev, status: 'completed' } : prev);
+                if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+                router.replace('/trip_completed');
+            }
+        };
+
+        socket.on('driver_location_update' as any, handleDriverLocation);
+        socket.on('booking_status_updated' as any, handleStatusUpdate);
+
+        return () => {
+            socket.off('driver_location_update' as any, handleDriverLocation);
+            socket.off('booking_status_updated' as any, handleStatusUpdate);
+        };
+    }, [user, activeBooking?._id, tripInProgress, pickupCoordinate, dropoffCoordinate, driverLocation]);
 
     const handleRejectOffer = async () => {
         if (!activeBooking || !pendingOffer) return;
@@ -1322,58 +1399,78 @@ export default function Home() {
                             </View>
                         </View>
 
-                        {/* Mock Arrival Button */}
-                        {!tripInProgress && !driverArrived && (
+                        {/* Driver Arrived Notification — shown when driver sets status 'arriving' */}
+                        {!tripInProgress && driverArrived && (
+                            <View style={{
+                                marginTop: 16,
+                                borderRadius: 12,
+                                borderWidth: 1.5,
+                                borderColor: Colors.light.primary,
+                                backgroundColor: Colors.light.success,
+                                padding: 14,
+                                flexDirection: 'row',
+                                alignItems: 'center',
+                                gap: 10,
+                            }}>
+                                <Ionicons name="checkmark-circle" size={22} color={Colors.light.primaryDark} />
+                                <View style={{ flex: 1 }}>
+                                    <Text style={{ fontSize: 14, fontWeight: '700', color: Colors.light.primaryDark }}>
+                                        Driver has arrived!
+                                    </Text>
+                                    <Text style={{ fontSize: 12, color: Colors.light.primaryDark, marginTop: 2 }}>
+                                        Please head to the pickup location.
+                                    </Text>
+                                </View>
+                            </View>
+                        )}
+
+                        {/* "I'm Coming" button — customer taps to tell driver they're on the way */}
+                        {!tripInProgress && driverArrived && activeBooking && acceptedDriverId && (
                             <TouchableOpacity
-                                onPress={() => setDriverArrived(true)}
-                                activeOpacity={0.8}
+                                onPress={() => {
+                                    emitCustomerComing(activeBooking._id, acceptedDriverId);
+                                    Alert.alert('On My Way!', 'The driver has been notified that you\'re coming.');
+                                }}
+                                activeOpacity={0.85}
                                 style={{
-                                    marginTop: 16,
-                                    height: 48, borderRadius: 12,
-                                    borderWidth: 1.5, borderColor: Colors.light.primary,
-                                    justifyContent: 'center', alignItems: 'center',
+                                    marginTop: 12,
+                                    height: 52,
+                                    borderRadius: 14,
+                                    backgroundColor: Colors.light.primary,
+                                    justifyContent: 'center',
+                                    alignItems: 'center',
+                                    flexDirection: 'row',
+                                    gap: 8,
                                 }}
                             >
-                                <Text style={{ fontSize: 15, fontWeight: '700', color: Colors.light.primary }}>Simulate Driver Arrival (Mock)</Text>
+                                <Ionicons name="walk" size={20} color="#fff" />
+                                <Text style={{ fontSize: 15, fontWeight: '700', color: '#FFFFFF' }}>
+                                    I'm Coming
+                                </Text>
                             </TouchableOpacity>
                         )}
 
-                        {/* Start Ride Button */}
-                        {!tripInProgress && driverArrived && (
-                            <TouchableOpacity
-                                onPress={() => {
-                                    setTripInProgress(true);
-                                    if (driverLocation && dropoffCoordinate) {
-                                        fetchRoute(driverLocation, dropoffCoordinate);
-                                    }
-                                }}
-                                activeOpacity={0.8}
-                                style={{
-                                    marginTop: 16,
-                                    height: 48, borderRadius: 12,
-                                    backgroundColor: Colors.light.primary,
-                                    justifyContent: 'center', alignItems: 'center',
-                                }}
-                            >
-                                <Text style={{ fontSize: 15, fontWeight: '700', color: '#FFFFFF' }}>Start Ride</Text>
-                            </TouchableOpacity>
-                        )}
-                        {/* Complete Ride Button (optional for later) */}
+                        {/* Trip in progress indicator */}
                         {tripInProgress && (
-                            <TouchableOpacity
-                                onPress={() => {
-                                    router.replace('/trip_completed');
-                                }}
-                                activeOpacity={0.8}
-                                style={{
-                                    marginTop: 16,
-                                    height: 48, borderRadius: 12,
-                                    backgroundColor: Colors.light.primary,
-                                    justifyContent: 'center', alignItems: 'center',
-                                }}
-                            >
-                                <Text style={{ fontSize: 15, fontWeight: '700', color: '#FFFFFF' }}>Finish Ride (Mock)</Text>
-                            </TouchableOpacity>
+                            <View style={{
+                                marginTop: 16,
+                                borderRadius: 12,
+                                backgroundColor: Colors.light.success,
+                                padding: 14,
+                                flexDirection: 'row',
+                                alignItems: 'center',
+                                gap: 10,
+                            }}>
+                                <ActivityIndicator size="small" color={Colors.light.primaryDark} />
+                                <View style={{ flex: 1 }}>
+                                    <Text style={{ fontSize: 14, fontWeight: '700', color: Colors.light.primaryDark }}>
+                                        Ride in progress
+                                    </Text>
+                                    <Text style={{ fontSize: 12, color: Colors.light.primaryDark, marginTop: 2 }}>
+                                        Sit back and relax — heading to your destination.
+                                    </Text>
+                                </View>
+                            </View>
                         )}
                     </View>
                 )}

@@ -91,15 +91,57 @@ exports.updateBookingStatus = async (req, res) => {
 
     const io = req.app.get('io');
     const connectedUsers = req.app.get('connectedUsers');
-    const customerSocketId = connectedUsers.get(booking.customer._id.toString());
-    
+
+    // Build a payload that includes customerId so the driver app can
+    // use it for forwarding location events.
+    const payload = {
+      ...booking.toObject ? booking.toObject() : booking,
+      customerId: booking.customer._id ? booking.customer._id.toString() : booking.customer.toString(),
+    };
+
+    const customerSocketId = connectedUsers.get(payload.customerId);
     // Update customer when driver arrives, starts, or completes trip
     if (customerSocketId) {
-      io.to(customerSocketId).emit('booking_status_updated', booking);
+      io.to(customerSocketId).emit('booking_status_updated', payload);
+    }
+
+    // If the ride is completed, also notify the driver socket (same one calling,
+    // but this keeps both sides consistent)
+    const driverId = booking.driver?._id ? booking.driver._id.toString() : (booking.driver ? booking.driver.toString() : null);
+    if (driverId) {
+      const driverSocketId = connectedUsers.get(driverId);
+      if (driverSocketId && req.body.status === 'completed') {
+        io.to(driverSocketId).emit('booking_status_updated', payload);
+      }
     }
 
     res.status(200).json(booking);
   } catch (error) {
     res.status(500).json({ message: error.message });
+  }
+};
+
+// Reject a driver's offer — customer declines
+exports.rejectDriverOffer = async (req, res) => {
+  try {
+    const customerId = req.user.id;
+    const { driverId } = req.body;
+
+    const booking = await bookingService.rejectDriverOffer(req.params.id, customerId, driverId);
+
+    const io = req.app.get('io');
+    const connectedUsers = req.app.get('connectedUsers');
+    const driverSocketId = connectedUsers.get(driverId.toString());
+
+    if (driverSocketId) {
+      io.to(driverSocketId).emit('offer_rejected', {
+        bookingId: req.params.id,
+        driverId,
+      });
+    }
+
+    res.status(200).json(booking);
+  } catch (error) {
+    res.status(error.statusCode || 500).json({ message: error.message });
   }
 };
