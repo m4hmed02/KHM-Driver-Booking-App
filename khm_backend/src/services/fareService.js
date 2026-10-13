@@ -7,7 +7,12 @@ exports.getFareSettings = async () => {
 exports.getFareSettingByType = async (vehicleType = 'standard') => {
   let setting = await FareSetting.findOne({ vehicleType });
   if (!setting) {
-    setting = { vehicleType, baseFare: 0, perKmRate: 0, perMinuteRate: 0 };
+    // Seed default fare settings on first use so calculate never returns 0
+    setting = await FareSetting.findOneAndUpdate(
+      { vehicleType },
+      { vehicleType, baseFare: 10, perKmRate: 2, perMinuteRate: 0.5 },
+      { new: true, upsert: true }
+    );
   }
   return setting;
 };
@@ -25,7 +30,7 @@ exports.upsertFareSetting = async (data) => {
 };
 
 exports.calculateRecommendedFare = async (vehicleType, distanceKm, durationMins) => {
-  const setting = await this.getFareSettingByType(vehicleType);
+  const setting = await exports.getFareSettingByType(vehicleType);
   let totalFare = setting.baseFare + (distanceKm * setting.perKmRate) + (durationMins * setting.perMinuteRate);
   return Math.round(totalFare / 10) * 10;
 };

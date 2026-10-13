@@ -10,8 +10,9 @@ import { DraggableBottomSheet, DraggableBottomSheetRef } from '../components/Dra
 import { useStyles } from '../styles/locationpicker.styles';
 import { useTheme } from '../hooks/use-theme';
 import { Colors } from '../constants/theme';
-import { useRouter, useNavigation } from 'expo-router';
+import { useRouter, useNavigation, useLocalSearchParams } from 'expo-router';
 import { useRoute } from '../hooks/useRoute';
+import { useRoadSnappedMarker } from '../hooks/useRoadSnappedMarker';
 import { calculateFareApi } from '../services/apis/fares/fareService';
 import { CalculateFareResponse } from '../services/apis/fares/type';
 import { createBookingApi, deleteBookingApi, getBookingStatusApi, acceptDriverOfferApi, rejectDriverOfferApi } from '../services/apis/booking/bookingService';
@@ -34,6 +35,18 @@ export default function Home() {
     const router = useRouter();
     const navigation = useNavigation();
     const { user } = useAuth();
+    const { tripEnded } = useLocalSearchParams<{ tripEnded?: string }>();
+
+    // When returning from trip_completed, clear any stale booking state.
+    // tripEnded carries the bookingId that just finished.
+    useEffect(() => {
+        if (tripEnded) {
+            clearBookingState(tripEnded);
+        }
+    // clearBookingState is stable (useCallback), tripEnded is a route param — safe to list both
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [tripEnded]);
+
     const [pickup, setPickup] = useState('');
     const [dropoff, setDropoff] = useState('');
     const [pickupCoordinate, setPickupCoordinate] = useState<{latitude: number, longitude: number} | null>(null);
@@ -66,7 +79,14 @@ export default function Home() {
     const [isOfferLoading, setIsOfferLoading] = useState(false);
     const [offerSecondsLeft, setOfferSecondsLeft] = useState(30);
     const [driverArriving, setDriverArriving] = useState(false);
-    const [driverLocation, setDriverLocation] = useState<{latitude: number, longitude: number} | null>(null);
+    // Animated driver marker — position glides smoothly between socket updates.
+    // animatedDriverCoord replaces the old plain driverLocation state.
+    const {
+        animatedCoord: animatedDriverCoord,
+        animatedHeading: animatedDriverHeading,
+        updateTarget: updateDriverMarker,
+        setInitial: setDriverMarkerInitial,
+    } = useRoadSnappedMarker({ duration: 4500 });
     const [acceptedDriver, setAcceptedDriver] = useState<any | null>(null);
     const [acceptedDriverId, setAcceptedDriverId] = useState<string | null>(null);
     const [driverArrived, setDriverArrived] = useState(false);
@@ -85,6 +105,26 @@ export default function Home() {
     const spinAnim = useRef(new Animated.Value(0)).current;
     const [trackMarker, setTrackMarker] = useState(true);
     const lastRouteUpdateRef = useRef<{ lat: number; lng: number; time: number } | null>(null);
+
+    // ── Refs to hold latest state values for use inside stable socket handlers ─
+    // This avoids stale closures without adding these values to the socket
+    // effect's dependency array (which would cause the listeners to be torn down
+    // and re-registered on every state change, creating a window where events
+    // can be silently dropped).
+    const acceptedDriverIdRef = useRef<string | null>(null);
+    const acceptedDriverRef   = useRef<any | null>(null);
+    const driverArrivingRef   = useRef<boolean>(false);
+    const tripInProgressRef   = useRef<boolean>(false);
+    const pickupCoordinateRef  = useRef<{latitude: number; longitude: number} | null>(null);
+    const dropoffCoordinateRef = useRef<{latitude: number; longitude: number} | null>(null);
+
+    // Keep refs in sync with state on every render
+    useEffect(() => { acceptedDriverIdRef.current  = acceptedDriverId;  }, [acceptedDriverId]);
+    useEffect(() => { acceptedDriverRef.current    = acceptedDriver;    }, [acceptedDriver]);
+    useEffect(() => { driverArrivingRef.current    = driverArriving;    }, [driverArriving]);
+    useEffect(() => { tripInProgressRef.current    = tripInProgress;    }, [tripInProgress]);
+    useEffect(() => { pickupCoordinateRef.current  = pickupCoordinate;  }, [pickupCoordinate]);
+    useEffect(() => { dropoffCoordinateRef.current = dropoffCoordinate; }, [dropoffCoordinate]);
 
     const [initialRegion, setInitialRegion] = useState<{latitude: number, longitude: number, latitudeDelta: number, longitudeDelta: number} | null>(null);
 
@@ -114,7 +154,8 @@ export default function Home() {
         setDriverArriving(false);
         setDriverArrived(false);
         setTripInProgress(false);
-        setDriverLocation(null);
+        // animatedDriverCoord is hidden by the driverArriving/tripInProgress guard,
+        // so no explicit reset needed — the hook will be re-seeded on the next ride.
     }, []);
 
     // Spin animation for the location-loading marker icon
@@ -338,16 +379,16 @@ export default function Home() {
 
     // Mock driver movement removed as requested - driver stays static for now
     useEffect(() => {
-        if ((driverArriving || tripInProgress) && driverLocation) {
+        if ((driverArriving || tripInProgress) && animatedDriverCoord) {
             const target = tripInProgress ? dropoffCoordinate : pickupCoordinate;
             if (target) {
                 mapRef.current?.fitToCoordinates(
-                    [target, driverLocation],
+                    [target, animatedDriverCoord],
                     { edgePadding: { top: 100, right: 50, bottom: (SCREEN_HEIGHT * 0.3) + 50, left: 50 }, animated: true }
                 );
             }
         }
-    }, [driverArriving, tripInProgress, pickupCoordinate, dropoffCoordinate, driverLocation]);
+    }, [driverArriving, tripInProgress, pickupCoordinate, dropoffCoordinate, animatedDriverCoord]);
 
     // ── Real-time socket: driver location + booking status updates ─────────────
     useEffect(() => {
@@ -358,16 +399,24 @@ export default function Home() {
         // Register so backend maps userId → socketId
         socket.emit('register' as any, user._id);
 
-        // Driver location updates → move driver marker on map
+        // Driver location updates → animate driver marker smoothly
         const handleDriverLocation = (payload: { bookingId: string; latitude: number; longitude: number }) => {
             if (payload.bookingId !== activeBooking._id) return;
-            const newLoc = { latitude: payload.latitude, longitude: payload.longitude };
-            setDriverLocation(newLoc);
+
+            // First update — seed without animation so marker appears immediately
+            if (!animatedDriverCoord) {
+                setDriverMarkerInitial(payload.latitude, payload.longitude);
+            } else {
+                updateDriverMarker(payload.latitude, payload.longitude);
+            }
 
             // Throttle route recalculation: only if driver has moved > 50m or 15s elapsed
             const now = Date.now();
             const last = lastRouteUpdateRef.current;
-            const targetDest = tripInProgress ? dropoffCoordinate : pickupCoordinate;
+            const newLoc = { latitude: payload.latitude, longitude: payload.longitude };
+            const targetDest = tripInProgressRef.current
+                ? dropoffCoordinateRef.current
+                : pickupCoordinateRef.current;
 
             if (!targetDest) return;
 
@@ -385,32 +434,69 @@ export default function Home() {
 
         // Booking status changes from the driver
         const handleStatusUpdate = (payload: any) => {
-            const bookingId = payload._id || payload.bookingId;
-            if (bookingId && bookingId !== activeBooking._id) return;
+            const incomingBookingId = payload._id || payload.bookingId;
+            if (incomingBookingId && incomingBookingId !== activeBooking._id) return;
 
             const newStatus = payload.status;
             if (!newStatus) return;
 
             if (newStatus === 'arriving') {
-                // Driver arrived at pickup
+                // Driver arrived at pickup — always set driverArrived regardless of other state
                 setDriverArrived(true);
                 setActiveBooking((prev: any) => prev ? { ...prev, status: 'arriving' } : prev);
+
+                // Extract driver info from the booking payload — the backend always
+                // populates booking.driver on status updates. This is the reliable
+                // source regardless of whether acceptedDriverId state was set.
+                const driverFromPayload = payload.driver ?? payload.booking?.driver ?? null;
+                const dIdFromPayload = driverFromPayload
+                    ? (typeof driverFromPayload === 'object' ? driverFromPayload._id : driverFromPayload)
+                    : null;
+
+                // Also try extracting from activeBooking.driver as a fallback
+                const dIdFromBooking = activeBooking?.driver
+                    ? (typeof activeBooking.driver === 'object'
+                        ? (activeBooking.driver as any)._id
+                        : activeBooking.driver)
+                    : null;
+
+                const resolvedDriverId = dIdFromPayload || dIdFromBooking || acceptedDriverIdRef.current;
+                const resolvedDriver   = (driverFromPayload && typeof driverFromPayload === 'object')
+                    ? driverFromPayload
+                    : (activeBooking?.driver && typeof activeBooking.driver === 'object'
+                        ? activeBooking.driver
+                        : acceptedDriverRef.current);
+
+                if (resolvedDriverId) {
+                    setAcceptedDriverId(resolvedDriverId);
+                    acceptedDriverIdRef.current = resolvedDriverId;
+                }
+                if (resolvedDriver) {
+                    setAcceptedDriver(resolvedDriver);
+                    acceptedDriverRef.current = resolvedDriver;
+                }
+                setDriverArriving(true);
+                driverArrivingRef.current = true;
             } else if (newStatus === 'started') {
                 // Ride started — switch map to show route to dropoff
                 lastRouteUpdateRef.current = null;
                 setTripInProgress(true);
+                tripInProgressRef.current = true;
                 setDriverArrived(false);
                 setActiveBooking((prev: any) => prev ? { ...prev, status: 'started' } : prev);
-                if (driverLocation && dropoffCoordinate) {
-                    fetchRoute(driverLocation, dropoffCoordinate);
-                } else if (dropoffCoordinate && pickupCoordinate) {
-                    fetchRoute(pickupCoordinate, dropoffCoordinate);
+                const dropoff = dropoffCoordinateRef.current;
+                const pickup  = pickupCoordinateRef.current;
+                if (animatedDriverCoord && dropoff) {
+                    fetchRoute(animatedDriverCoord, dropoff);
+                } else if (dropoff && pickup) {
+                    fetchRoute(pickup, dropoff);
                 }
             } else if (newStatus === 'completed') {
-                // Ride complete
+                const fare = payload.estimatedFare ?? activeBooking.estimatedFare ?? 0;
+                const bId  = payload._id ?? activeBooking._id;
                 setActiveBooking((prev: any) => prev ? { ...prev, status: 'completed' } : prev);
                 if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
-                router.replace('/trip_completed');
+                router.replace(`/trip_completed?bookingId=${bId}&fare=${fare}`);
             }
         };
 
@@ -421,7 +507,11 @@ export default function Home() {
             socket.off('driver_location_update' as any, handleDriverLocation);
             socket.off('booking_status_updated' as any, handleStatusUpdate);
         };
-    }, [user, activeBooking?._id, tripInProgress, pickupCoordinate, dropoffCoordinate, driverLocation]);
+    // Only reconnect when the user session or active booking changes.
+    // All other values (tripInProgress, coordinates, driver info) are read
+    // from refs so they never need to be in this dependency array.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [user, activeBooking?._id]);
 
     const handleRejectOffer = async () => {
         if (!activeBooking || !pendingOffer) return;
@@ -873,17 +963,34 @@ export default function Home() {
                     {routeCoordinates.length > 0 && (
                         <Polyline coordinates={routeCoordinates} strokeWidth={6} strokeColor="#000000" />
                     )}
-                    {(driverArriving || tripInProgress) && driverLocation && (
-                        <Marker coordinate={driverLocation}>
-                            <View style={{
-                                backgroundColor: '#FFFFFF',
-                                width: 36, height: 36, borderRadius: 18,
-                                elevation: 5, shadowColor: '#000', shadowOpacity: 0.25, shadowRadius: 5, shadowOffset: { width: 0, height: 2 },
-                                justifyContent: 'center', alignItems: 'center',
-                                borderWidth: 2, borderColor: theme.primary,
-                            }}>
-                                <Ionicons name="car" size={20} color={theme.primaryDark} />
-                            </View>
+                    {(driverArriving || tripInProgress) && animatedDriverCoord && (
+                        <Marker
+                            coordinate={animatedDriverCoord}
+                            anchor={{ x: 0.5, y: 0.5 }}
+                            tracksViewChanges={true}
+                            zIndex={999}
+                        >
+                            <Animated.View
+                                style={{
+                                    transform: [{
+                                        rotate: animatedDriverHeading.interpolate({
+                                            inputRange: [-3600, 3600],
+                                            outputRange: ['-3600deg', '3600deg'],
+                                            extrapolate: 'extend',
+                                        }),
+                                    }],
+                                }}
+                            >
+                                <View style={{
+                                    backgroundColor: '#FFFFFF',
+                                    width: 36, height: 36, borderRadius: 18,
+                                    elevation: 5, shadowColor: '#000', shadowOpacity: 0.25, shadowRadius: 5, shadowOffset: { width: 0, height: 2 },
+                                    justifyContent: 'center', alignItems: 'center',
+                                    borderWidth: 2, borderColor: theme.primary,
+                                }}>
+                                    <Ionicons name="navigate" size={20} color={theme.primaryDark} />
+                                </View>
+                            </Animated.View>
                         </Marker>
                     )}
                     {!tripInProgress && (pickupCoordinate || (pickup === '' && (initialRegion || isLocationLoading))) && (
@@ -1330,7 +1437,7 @@ export default function Home() {
                 )}
 
                 {/* Driver on the way panel */}
-                {activeBooking && (driverArriving || tripInProgress) && acceptedDriver && (
+                {activeBooking && (driverArriving || tripInProgress) && (acceptedDriver || activeBooking.driver) && (
                     <View style={{
                         position: 'absolute',
                         bottom: 0,
@@ -1373,31 +1480,38 @@ export default function Home() {
                         </View>
                         
                         {/* Driver details */}
-                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: Colors.light.background, borderRadius: 16, padding: 16, borderWidth: 1, borderColor: Colors.light.border }}>
-                            <Image
-                                source={{ uri: getAvatarUrl(acceptedDriver.avatar) }}
-                                style={{ width: 54, height: 54, borderRadius: 27, backgroundColor: Colors.light.border }}
-                            />
-                            <View style={{ flex: 1 }}>
-                                <Text style={{ fontSize: 16, fontWeight: '700', color: Colors.light.text }}>
-                                    {acceptedDriver.name || 'Driver'}
-                                </Text>
-                                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 3 }}>
-                                    <Ionicons name="star" size={13} color={Colors.light.amber} />
-                                    <Text style={{ fontSize: 13, color: Colors.light.secondaryText, fontWeight: '500' }}>
-                                        {acceptedDriver.rating != null ? acceptedDriver.rating.toFixed(1) : '5.0'}
+                        {(() => {
+                            const driver = acceptedDriver ||
+                                (typeof activeBooking.driver === 'object' ? activeBooking.driver as any : null);
+                            if (!driver) return null;
+                            return (
+                            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: Colors.light.background, borderRadius: 16, padding: 16, borderWidth: 1, borderColor: Colors.light.border }}>
+                                <Image
+                                    source={{ uri: getAvatarUrl(driver.avatar) }}
+                                    style={{ width: 54, height: 54, borderRadius: 27, backgroundColor: Colors.light.border }}
+                                />
+                                <View style={{ flex: 1 }}>
+                                    <Text style={{ fontSize: 16, fontWeight: '700', color: Colors.light.text }}>
+                                        {driver.name || 'Driver'}
+                                    </Text>
+                                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 3 }}>
+                                        <Ionicons name="star" size={13} color={Colors.light.amber} />
+                                        <Text style={{ fontSize: 13, color: Colors.light.secondaryText, fontWeight: '500' }}>
+                                            {driver.rating != null ? driver.rating.toFixed(1) : '5.0'}
+                                        </Text>
+                                    </View>
+                                </View>
+                                <View style={{ alignItems: 'flex-end' }}>
+                                    <Text style={{ fontSize: 14, fontWeight: '700', color: Colors.light.text }}>
+                                        Toyota Camry
+                                    </Text>
+                                    <Text style={{ fontSize: 13, color: Colors.light.secondaryText, marginTop: 2, fontWeight: '600' }}>
+                                        DXB 1234
                                     </Text>
                                 </View>
                             </View>
-                            <View style={{ alignItems: 'flex-end' }}>
-                                <Text style={{ fontSize: 14, fontWeight: '700', color: Colors.light.text }}>
-                                    Toyota Camry
-                                </Text>
-                                <Text style={{ fontSize: 13, color: Colors.light.secondaryText, marginTop: 2, fontWeight: '600' }}>
-                                    DXB 1234
-                                </Text>
-                            </View>
-                        </View>
+                            );
+                        })()}
 
                         {/* Driver Arrived Notification — shown when driver sets status 'arriving' */}
                         {!tripInProgress && driverArrived && (
@@ -1425,10 +1539,18 @@ export default function Home() {
                         )}
 
                         {/* "I'm Coming" button — customer taps to tell driver they're on the way */}
-                        {!tripInProgress && driverArrived && activeBooking && acceptedDriverId && (
+                        {!tripInProgress && driverArrived && activeBooking && (() => {
+                            const dId = acceptedDriverId ||
+                                (activeBooking.driver
+                                    ? (typeof activeBooking.driver === 'object'
+                                        ? (activeBooking.driver as any)._id
+                                        : activeBooking.driver as string)
+                                    : null);
+                            if (!dId) return null;
+                            return (
                             <TouchableOpacity
                                 onPress={() => {
-                                    emitCustomerComing(activeBooking._id, acceptedDriverId);
+                                    emitCustomerComing(activeBooking._id, dId);
                                     Alert.alert('On My Way!', 'The driver has been notified that you\'re coming.');
                                 }}
                                 activeOpacity={0.85}
@@ -1448,7 +1570,8 @@ export default function Home() {
                                     I'm Coming
                                 </Text>
                             </TouchableOpacity>
-                        )}
+                            );
+                        })()}
 
                         {/* Trip in progress indicator */}
                         {tripInProgress && (

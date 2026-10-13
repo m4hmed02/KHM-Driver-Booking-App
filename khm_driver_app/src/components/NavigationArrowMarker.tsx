@@ -1,12 +1,14 @@
 import React from 'react';
-import { StyleSheet, View } from 'react-native';
+import { Animated, StyleSheet, View } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 
 interface NavigationArrowMarkerProps {
     /**
-     * Orientation heading in degrees (0..360, where 0 is North).
+     * Heading as an Animated.Value (degrees, 0 = North, increases clockwise).
+     * Pass the `animatedHeading` returned by `useAnimatedMarker`.
+     * A plain number is also accepted for static / initial renders.
      */
-    heading?: number;
+    heading?: Animated.Value | number;
     /**
      * Outer circle diameter. Defaults to 44.
      */
@@ -27,6 +29,23 @@ export const NavigationArrowMarker: React.FC<NavigationArrowMarkerProps> = ({
     arrowSize = 28,
     arrowColor = '#0066FF',
 }) => {
+    // Accept either a raw number (static) or an Animated.Value (live).
+    // Animated.Value.interpolate returns a string like "45deg" directly.
+    const rotateStyle =
+        heading instanceof Animated.Value
+            ? {
+                  transform: [
+                      {
+                          rotate: heading.interpolate({
+                              inputRange: [-3600, 3600],
+                              outputRange: ['-3600deg', '3600deg'],
+                              extrapolate: 'extend',
+                          }),
+                      },
+                  ],
+              }
+            : { transform: [{ rotate: `${heading}deg` }] };
+
     return (
         <View style={[styles.container, { width: size + 10, height: size + 10 }]}>
             <View
@@ -39,18 +58,16 @@ export const NavigationArrowMarker: React.FC<NavigationArrowMarkerProps> = ({
                     },
                 ]}
             >
-                <View
+                {/* Animated.View handles the rotation so it runs without React re-renders */}
+                <Animated.View
                     style={[
                         styles.arrowWrapper,
-                        {
-                            width: arrowSize,
-                            height: arrowSize,
-                            transform: [{ rotate: `${heading}deg` }],
-                        },
+                        { width: arrowSize, height: arrowSize },
+                        rotateStyle,
                     ]}
                 >
                     <MaterialIcons name="navigation" size={arrowSize} color={arrowColor} />
-                </View>
+                </Animated.View>
             </View>
         </View>
     );

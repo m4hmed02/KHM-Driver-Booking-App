@@ -33,6 +33,7 @@ import { Ionicons } from '@expo/vector-icons';
 import NavigationArrowMarker from '../components/NavigationArrowMarker';
 import { Colors } from '../constants/theme';
 import { Coordinate, useRoute } from '../hooks/useRoute';
+import { useRoadSnappedMarker } from '../hooks/useRoadSnappedMarker';
 import {
     getBookingStatusApi,
     updateBookingStatusApi,
@@ -261,26 +262,6 @@ const styles = StyleSheet.create({
     },
 });
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
-/**
- * Calculates bearing from start coordinate to destination coordinate in degrees (0..360)
- */
-function calculateBearing(start: Coordinate, dest: Coordinate): number {
-    const startLat = (start.latitude * Math.PI) / 180;
-    const startLng = (start.longitude * Math.PI) / 180;
-    const destLat = (dest.latitude * Math.PI) / 180;
-    const destLng = (dest.longitude * Math.PI) / 180;
-
-    const y = Math.sin(destLng - startLng) * Math.cos(destLat);
-    const x =
-        Math.cos(startLat) * Math.sin(destLat) -
-        Math.sin(startLat) * Math.cos(destLat) * Math.cos(destLng - startLng);
-
-    const brng = (Math.atan2(y, x) * 180) / Math.PI;
-    return (brng + 360) % 360;
-}
-
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const DEFAULT_REGION: Region = {
@@ -302,17 +283,25 @@ export default function ActiveRide() {
     const [booking, setBooking] = useState<Booking | null>(null);
     const [isLoading, setIsLoading] = useState(true);
     const [isUpdating, setIsUpdating] = useState(false);
-    const [driverCoord, setDriverCoord] = useState<Coordinate | null>(null);
-    const [driverHeading, setDriverHeading] = useState<number>(0);
     const [customerComing, setCustomerComing] = useState(false);
     const [showCompleted, setShowCompleted] = useState(false);
 
+    // ── Smooth animated marker ────────────────────────────────────────────────
+    // animatedCoord  — interpolated lat/lng updated every rAF frame
+    // animatedHeading — Animated.Value in degrees, passed to NavigationArrowMarker
+    const {
+        animatedCoord,
+        animatedHeading,
+        updateTarget: updateMarkerTarget,
+        setInitial: setMarkerInitial,
+    } = useRoadSnappedMarker({ duration: 4500 });
+
     const mapRef = useRef<MapView>(null);
     const locationSubRef = useRef<Location.LocationSubscription | null>(null);
-    const headingSubRef = useRef<Location.LocationSubscription | null>(null);
     const locationEmitTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+    // Holds the latest raw GPS fix — used only for the socket emit interval
+    // so we always broadcast the true position, not the interpolated one.
     const latestCoordRef = useRef<Coordinate | null>(null);
-    const prevCoordRef = useRef<Coordinate | null>(null);
 
     const { fetchRoute, routeCoordinates } = useRoute();
 
@@ -323,6 +312,9 @@ export default function ActiveRide() {
         try {
             const data = await getBookingStatusApi(bookingId);
             setBooking(data);
+            // Never auto-show the completed overlay on load — it should only appear
+            // as a direct result of the driver tapping "Complete Ride".
+            setShowCompleted(false);
         } catch (err) {
             Alert.alert(
                 'Error',
@@ -356,7 +348,12 @@ export default function ActiveRide() {
         };
     }, [user, bookingId]);
 
-    // ── GPS & Heading tracking ────────────────────────────────────────────────
+    // ── GPS tracking ──────────────────────────────────────────────────────────
+    // Raw GPS fixes are fed into useRoadSnappedMarker (updateTarget / setInitial).
+    // The hook fetches an OSRM micro-route for each fix and animates the marker
+    // along the real road polyline. latestCoordRef is updated in parallel so the
+    // socket emit interval always broadcasts the true GPS position.
+    // broadcasts the true GPS position (not the animated/interpolated one).
 
     useEffect(() => {
         let cancelled = false;
@@ -366,64 +363,39 @@ export default function ActiveRide() {
                 const { status } = await Location.requestForegroundPermissionsAsync();
                 if (status !== 'granted') return;
 
-                // Get initial position
+                // ── Initial fix — seed marker without animation ───────────────
                 const loc = await Location.getCurrentPositionAsync({
                     accuracy: Location.Accuracy.BestForNavigation,
                 });
-                const initial = { latitude: loc.coords.latitude, longitude: loc.coords.longitude };
+                const initial: Coordinate = {
+                    latitude: loc.coords.latitude,
+                    longitude: loc.coords.longitude,
+                };
                 if (!cancelled) {
-                    setDriverCoord(initial);
                     latestCoordRef.current = initial;
-                    prevCoordRef.current = initial;
-                    if (loc.coords.heading !== null && loc.coords.heading >= 0) {
-                        setDriverHeading(Math.round(loc.coords.heading));
-                    }
+                    setMarkerInitial(initial.latitude, initial.longitude);
                 }
 
-                // Watch continuously for position & speed/heading updates
+                // ── Continuous watch — animate on every new position ──────────
                 locationSubRef.current = await Location.watchPositionAsync(
                     {
                         accuracy: Location.Accuracy.BestForNavigation,
-                        distanceInterval: 5, // update every 5 metres moved
-                        timeInterval: 2000,
+                        distanceInterval: 5,  // metres
+                        timeInterval: 2000,   // ms
                     },
                     (position) => {
-                        const coord = {
+                        if (cancelled) return;
+                        const coord: Coordinate = {
                             latitude: position.coords.latitude,
                             longitude: position.coords.longitude,
                         };
-                        const prev = latestCoordRef.current;
+                        // Store real position for socket emission
                         latestCoordRef.current = coord;
-                        if (!cancelled) {
-                            setDriverCoord(coord);
-
-                            // Prefer GPS heading when moving
-                            if (position.coords.heading !== null && position.coords.heading >= 0) {
-                                setDriverHeading(Math.round(position.coords.heading));
-                            } else if (prev) {
-                                const dLat = Math.abs(coord.latitude - prev.latitude);
-                                const dLng = Math.abs(coord.longitude - prev.longitude);
-                                if (dLat > 0.00003 || dLng > 0.00003) {
-                                    const calculated = calculateBearing(prev, coord);
-                                    setDriverHeading(Math.round(calculated));
-                                }
-                            }
-                        }
+                        // Hand off to the animation hook — it lerps position and
+                        // derives the bearing automatically.
+                        updateMarkerTarget(coord.latitude, coord.longitude);
                     },
                 );
-
-                // Watch device compass for smooth heading orientation
-                try {
-                    headingSubRef.current = await Location.watchHeadingAsync((headingData) => {
-                        if (cancelled) return;
-                        const h = headingData.trueHeading >= 0 ? headingData.trueHeading : headingData.magHeading;
-                        if (h >= 0) {
-                            setDriverHeading(Math.round(h));
-                        }
-                    });
-                } catch {
-                    // Compass sensor unavailable (e.g. simulator)
-                }
             } catch {
                 // GPS unavailable — still show map
             }
@@ -432,26 +404,8 @@ export default function ActiveRide() {
         return () => {
             cancelled = true;
             locationSubRef.current?.remove();
-            headingSubRef.current?.remove();
         };
-    }, []);
-
-    // ── Initial bearing towards destination if not yet moved ─────────────────
-
-    useEffect(() => {
-        if (!driverCoord || !booking) return;
-        const target =
-            booking.status === 'started'
-                ? booking.dropoffLocation
-                : booking.pickupLocation;
-        if (target?.latitude && target?.longitude) {
-            const bearingToTarget = calculateBearing(driverCoord, {
-                latitude: target.latitude,
-                longitude: target.longitude,
-            });
-            setDriverHeading((current) => (current === 0 ? Math.round(bearingToTarget) : current));
-        }
-    }, [booking?.status, driverCoord?.latitude, driverCoord?.longitude]);
+    }, [setMarkerInitial, updateMarkerTarget]);
 
     // ── Emit location to customer via socket every GPS_UPDATE_INTERVAL_MS ─────
 
@@ -482,15 +436,15 @@ export default function ActiveRide() {
     // ── Route: driver → pickup (accepted/arriving) or → dropoff (started) ────
 
     useEffect(() => {
-        if (!booking || !driverCoord) return;
+        if (!booking || !animatedCoord) return;
         const destination: Coordinate =
             booking.status === 'started'
                 ? { latitude: booking.dropoffLocation.latitude, longitude: booking.dropoffLocation.longitude }
                 : { latitude: booking.pickupLocation.latitude, longitude: booking.pickupLocation.longitude };
-        fetchRoute(driverCoord, destination);
+        fetchRoute(animatedCoord, destination);
     // Route re-fetches whenever driver position changes or status changes
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [booking?.status, driverCoord?.latitude, driverCoord?.longitude]);
+    }, [booking?.status, animatedCoord?.latitude, animatedCoord?.longitude]);
 
     // ── Fit map to route ──────────────────────────────────────────────────────
 
@@ -506,15 +460,43 @@ export default function ActiveRide() {
 
     const handleStatusUpdate = async (nextStatus: Booking['status']) => {
         if (!booking) return;
+        // Guard: never show the completed overlay unless this call explicitly
+        // triggers the 'completed' transition (prevents stale state leaking in).
+        if (nextStatus === 'completed') {
+            Alert.alert(
+                'Complete Ride',
+                'Are you sure you want to complete this ride?',
+                [
+                    { text: 'Cancel', style: 'cancel' },
+                    {
+                        text: 'Complete',
+                        style: 'default',
+                        onPress: async () => {
+                            setIsUpdating(true);
+                            try {
+                                const updated = await updateBookingStatusApi(booking._id, 'completed');
+                                setBooking(updated);
+                                if (locationEmitTimer.current) clearInterval(locationEmitTimer.current);
+                                locationSubRef.current?.remove();
+                                setShowCompleted(true);
+                            } catch (err) {
+                                Alert.alert(
+                                    'Error',
+                                    err instanceof Error ? err.message : 'Could not complete ride.',
+                                );
+                            } finally {
+                                setIsUpdating(false);
+                            }
+                        },
+                    },
+                ],
+            );
+            return;
+        }
         setIsUpdating(true);
         try {
             const updated = await updateBookingStatusApi(booking._id, nextStatus);
             setBooking(updated);
-            if (nextStatus === 'completed') {
-                if (locationEmitTimer.current) clearInterval(locationEmitTimer.current);
-                locationSubRef.current?.remove();
-                setShowCompleted(true);
-            }
         } catch (err) {
             Alert.alert(
                 'Error',
@@ -602,10 +584,10 @@ export default function ActiveRide() {
                 style={styles.map}
                 provider={PROVIDER_GOOGLE}
                 initialRegion={
-                    driverCoord
+                    animatedCoord
                         ? {
-                              latitude: driverCoord.latitude,
-                              longitude: driverCoord.longitude,
+                              latitude: animatedCoord.latitude,
+                              longitude: animatedCoord.longitude,
                               latitudeDelta: 0.06,
                               longitudeDelta: 0.06,
                           }
@@ -615,15 +597,16 @@ export default function ActiveRide() {
                 showsMyLocationButton={false}
             >
                 {/* ── Driver Navigation Arrow Marker (replaces standard blue dot) ── */}
-                {driverCoord && (
+                {animatedCoord && (
                     <Marker
-                        coordinate={driverCoord}
+                        coordinate={animatedCoord}
                         anchor={{ x: 0.5, y: 0.5 }}
                         flat={false}
                         zIndex={999}
+                        tracksViewChanges={true}
                         title="Your Location"
                     >
-                        <NavigationArrowMarker heading={driverHeading} />
+                        <NavigationArrowMarker heading={animatedHeading} />
                     </Marker>
                 )}
 
@@ -678,14 +661,14 @@ export default function ActiveRide() {
             </MapView>
 
             {/* Recenter button */}
-            {driverCoord && (
+            {animatedCoord && (
                 <TouchableOpacity
                     style={styles.recenterButton}
                     onPress={() => {
-                        if (mapRef.current && driverCoord) {
+                        if (mapRef.current && animatedCoord) {
                             mapRef.current.animateToRegion({
-                                latitude: driverCoord.latitude,
-                                longitude: driverCoord.longitude,
+                                latitude: animatedCoord.latitude,
+                                longitude: animatedCoord.longitude,
                                 latitudeDelta: 0.015,
                                 longitudeDelta: 0.015,
                             }, 500);
