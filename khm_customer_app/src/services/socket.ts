@@ -36,10 +36,20 @@ export interface BookingStatusUpdatedPayload {
     [key: string]: any;
 }
 
+export interface ChatMessagePayload {
+    bookingId: string;
+    senderId: string;
+    senderName: string;
+    text: string;
+    timestamp: number;
+}
+
 export interface ServerToClientEvents {
     driver_location_update: (payload: DriverLocationPayload) => void;
     booking_status_updated: (payload: BookingStatusUpdatedPayload) => void;
     new_driver_offer: (booking: any) => void;
+    // In-ride chat message forwarded by the server
+    chat_message: (payload: ChatMessagePayload) => void;
 }
 
 // ─── Singleton management ────────────────────────────────────────────────────
@@ -107,6 +117,27 @@ export const getSocket = (): Socket<ServerToClientEvents> | null => socket;
 export const emitCustomerComing = (bookingId: string, driverId: string): void => {
     if (!socket?.connected) return;
     socket.emit('customer_coming' as any, { bookingId, driverId });
+};
+
+/**
+ * Send a chat message to the other party via the server relay.
+ */
+export const emitChatMessage = (
+    bookingId: string,
+    recipientId: string,
+    senderId: string,
+    senderName: string,
+    text: string,
+): void => {
+    if (!socket?.connected) return;
+    socket.emit('chat_message' as any, {
+        bookingId,
+        recipientId,
+        senderId,
+        senderName,
+        text,
+        timestamp: Date.now(),
+    });
 };
 
 /**

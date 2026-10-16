@@ -428,6 +428,70 @@ export const styles = StyleSheet.create({
         color: Colors.light.secondaryText,
     },
 
+    // ─── Tab bar ──────────────────────────────────────────────────────────────
+    tabBar: {
+        flexDirection: 'row',
+        paddingHorizontal: 16,
+        paddingTop: 8,
+        paddingBottom: 4,
+        borderBottomWidth: 1,
+        borderBottomColor: Colors.light.border,
+        gap: 8,
+    },
+    tabItem: {
+        flex: 1,
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 5,
+        paddingVertical: 10,
+        borderRadius: 10,
+        backgroundColor: 'transparent',
+    },
+    tabItemActive: {
+        backgroundColor: Colors.light.success,
+    },
+    tabLabel: {
+        fontSize: 13,
+        fontWeight: '600',
+        color: Colors.light.secondaryText,
+    },
+    tabLabelActive: {
+        color: Colors.light.primaryDark,
+    },
+    tabBadge: {
+        minWidth: 18,
+        height: 18,
+        borderRadius: 9,
+        backgroundColor: Colors.light.primary,
+        alignItems: 'center',
+        justifyContent: 'center',
+        paddingHorizontal: 4,
+    },
+    tabBadgeText: {
+        fontSize: 10,
+        fontWeight: '700',
+        color: '#fff',
+    },
+
+    // ─── Scheduled time badge (on ScheduledRideCard) ──────────────────────────
+    scheduledTimeBadge: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 5,
+        backgroundColor: Colors.light.success,
+        alignSelf: 'flex-start',
+        paddingHorizontal: 10,
+        paddingVertical: 4,
+        borderRadius: 8,
+        marginBottom: 10,
+    },
+    scheduledTimeText: {
+        fontSize: 12,
+        fontWeight: '600',
+        color: Colors.light.primaryDark,
+    },
+
     // ─── Waiting for response overlay ─────────────────────────────────────────
     waitingContainer: {
         alignItems: 'center',

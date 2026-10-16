@@ -1,29 +1,34 @@
 /**
  * useRoadSnappedMarker
  *
- * Animates a map marker along the actual road network between GPS updates
- * instead of straight-line interpolation.
+ * Smoothly interpolates a map marker between consecutive GPS fixes.
  *
- * How it works
- * ────────────
- * 1. When updateTarget(lat, lng) is called a lightweight OSRM request is fired
- *    in the background to get the road polyline between the current position
- *    and the new one.
- * 2. The resulting array of road coordinates is pushed onto an animation queue.
- * 3. A requestAnimationFrame loop drains the queue sequentially — each queued
- *    segment is walked proportionally to elapsed time so the total traversal
- *    fits inside `duration` ms.
- * 4. Bearing is computed from the actual road geometry at every frame so the
- *    marker arrow always faces the true driving direction.
- * 5. If OSRM fails or the move is tiny (< ~5 m) straight-line is used instead
- *    so there is always a graceful fallback with no visible gap.
+ * Design decisions
+ * ────────────────
+ * • No OSRM/network calls — road-snapping adds unpredictable latency that
+ *   causes queued segments to pile up and the marker to "rush" to catch up.
+ *   Linear interpolation between real GPS fixes looks identical at normal
+ *   driving speeds and is always instantaneous.
  *
- * Public API (identical to useAnimatedMarker — drop-in replacement)
- * ─────────────────────────────────────────────────────────────────
- *   animatedCoord   — {latitude, longitude} updated every rAF frame
+ * • setInterval at ~16 ms instead of requestAnimationFrame — rAF is tied to
+ *   React's render scheduler and gets throttled / batched in ways that cause
+ *   visible stuttering. A raw interval fires independently of React and gives
+ *   a consistent 60 fps regardless of component re-render pressure.
+ *
+ * • React state is updated at most once per interval tick via a ref-stable
+ *   setter — this prevents the "maximum update depth exceeded" loop that
+ *   comes from calling setState inside effects/callbacks that regenerate on
+ *   every render.
+ *
+ * • tracksViewChanges is NOT managed here — callers should set it to false
+ *   after the first render (see usage note below).
+ *
+ * Public API
+ * ──────────
+ *   animatedCoord   — { latitude, longitude } updated ~60fps during movement
  *   animatedHeading — Animated.Value (degrees) for marker rotation
- *   updateTarget    — push a new GPS fix into the pipeline
- *   setInitial      — seed position without animation (first fix)
+ *   updateTarget    — call with each new GPS fix
+ *   setInitial      — seed position instantly (first fix, no animation)
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -36,19 +41,12 @@ export interface AnimatedCoord {
     longitude: number;
 }
 
-interface QueueEntry {
-    /** Full road polyline for this segment (≥ 2 points) */
-    path: AnimatedCoord[];
-    /** Total ms to spend traversing this segment */
-    duration: number;
-}
-
 interface UseRoadSnappedMarkerOptions {
     /**
-     * Time budget in ms to animate each GPS-update segment.
-     * Should roughly match the location-emit interval.
-     * Default: 4500 ms (gives a slight buffer over the 5 s emit interval so
-     * the marker arrives just before the next update).
+     * How long (ms) to spend animating the marker to each new GPS fix.
+     * Set this slightly below your location-emit interval so the marker
+     * arrives just before the next fix comes in.
+     * Default: 4000 ms  (works well with a 5 s emit interval)
      */
     duration?: number;
 }
@@ -64,28 +62,18 @@ interface UseRoadSnappedMarkerReturn {
 
 const toRad = (d: number) => (d * Math.PI) / 180;
 
-/** Haversine bearing A→B, returns 0..360 */
-function bearing(a: AnimatedCoord, b: AnimatedCoord): number {
-    const dLng = toRad(b.longitude - a.longitude);
-    const la = toRad(a.latitude);
-    const lb = toRad(b.latitude);
+function bearing(
+    fromLat: number, fromLng: number,
+    toLat: number,   toLng: number,
+): number {
+    const dLng = toRad(toLng - fromLng);
+    const la = toRad(fromLat);
+    const lb = toRad(toLat);
     const y = Math.sin(dLng) * Math.cos(lb);
     const x = Math.cos(la) * Math.sin(lb) - Math.sin(la) * Math.cos(lb) * Math.cos(dLng);
     return ((Math.atan2(y, x) * 180) / Math.PI + 360) % 360;
 }
 
-/** Haversine distance in metres */
-function distanceM(a: AnimatedCoord, b: AnimatedCoord): number {
-    const R = 6371000;
-    const dLat = toRad(b.latitude - a.latitude);
-    const dLng = toRad(b.longitude - a.longitude);
-    const s =
-        Math.sin(dLat / 2) ** 2 +
-        Math.cos(toRad(a.latitude)) * Math.cos(toRad(b.latitude)) * Math.sin(dLng / 2) ** 2;
-    return R * 2 * Math.atan2(Math.sqrt(s), Math.sqrt(1 - s));
-}
-
-/** Shortest signed rotation delta (-180..180) */
 function shortestDelta(from: number, to: number): number {
     let d = ((to - from) % 360 + 360) % 360;
     if (d > 180) d -= 360;
@@ -96,41 +84,9 @@ function lerp(a: number, b: number, t: number): number {
     return a + (b - a) * t;
 }
 
-// ─── OSRM micro-route fetcher ─────────────────────────────────────────────────
-
-/**
- * Fetch a driving polyline between two close coordinates from the public
- * OSRM demo server. Returns an array of coordinates (road-snapped) or null
- * if the request fails / is too slow.
- *
- * We use a 3-second timeout so a slow network never blocks the animation queue.
- */
-async function fetchRoadPath(
-    from: AnimatedCoord,
-    to: AnimatedCoord,
-): Promise<AnimatedCoord[] | null> {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 3000);
-    try {
-        const url =
-            `https://router.project-osrm.org/route/v1/driving/` +
-            `${from.longitude},${from.latitude};${to.longitude},${to.latitude}` +
-            `?overview=full&geometries=geojson&steps=false`;
-
-        const res = await fetch(url, { signal: controller.signal });
-        if (!res.ok) return null;
-        const data = await res.json();
-        if (data.code !== 'Ok' || !data.routes?.length) return null;
-
-        const pts: AnimatedCoord[] = data.routes[0].geometry.coordinates.map(
-            ([lng, lat]: [number, number]) => ({ latitude: lat, longitude: lng }),
-        );
-        return pts.length >= 2 ? pts : null;
-    } catch {
-        return null;
-    } finally {
-        clearTimeout(timeoutId);
-    }
+// Ease-in-out cubic — starts and ends gently
+function ease(t: number): number {
+    return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
 }
 
 // ─── Hook ─────────────────────────────────────────────────────────────────────
@@ -138,209 +94,167 @@ async function fetchRoadPath(
 export function useRoadSnappedMarker(
     options: UseRoadSnappedMarkerOptions = {},
 ): UseRoadSnappedMarkerReturn {
-    const DURATION = options.duration ?? 4500;
+    const DURATION = options.duration ?? 4000;
+    const TICK_MS  = 16; // ~60 fps
 
-    // ── State / refs ──────────────────────────────────────────────────────────
+    // The only React state — lat/lng pair shown on the map
+    const [animatedCoord, setAnimatedCoordState] = useState<AnimatedCoord | null>(null);
 
-    const [animatedCoord, setAnimatedCoord] = useState<AnimatedCoord | null>(null);
-    const animatedHeading = useRef(new Animated.Value(0)).current;
+    // All animation state in refs — never triggers re-renders
+    const animatedHeading      = useRef(new Animated.Value(0)).current;
+    const cumulativeHeading    = useRef(0);
+    const headingAnim          = useRef<Animated.CompositeAnimation | null>(null);
 
-    /** The queue of road segments waiting to be animated */
-    const queue = useRef<QueueEntry[]>([]);
-    /** True while the rAF loop is running */
-    const running = useRef(false);
-    const rafRef = useRef<number | null>(null);
+    // Current interpolation segment
+    const fromCoord     = useRef<AnimatedCoord | null>(null);
+    const toCoord       = useRef<AnimatedCoord | null>(null);
+    const currentCoord  = useRef<AnimatedCoord | null>(null); // Tracks live interpolated position
+    const startTime     = useRef<number>(0);
+    const intervalId    = useRef<ReturnType<typeof setInterval> | null>(null);
 
-    /** Last position that was fully rendered (start of current segment) */
-    const currentPosRef = useRef<AnimatedCoord | null>(null);
-    /** Cumulative (unbounded) heading so Animated.timing never wraps */
-    const cumulativeHeadingRef = useRef<number>(0);
-    /** In-flight Animated.timing for heading */
-    const headingAnimRef = useRef<Animated.CompositeAnimation | null>(null);
+    // Stable setter ref — safe to call from the interval without dep arrays
+    const setCoord = useRef(setAnimatedCoordState);
+    useEffect(() => { setCoord.current = setAnimatedCoordState; }, []);
 
-    // ── Heading helper ────────────────────────────────────────────────────────
+    // ── Heading animator ──────────────────────────────────────────────────────
 
-    const animateHeadingTo = useCallback(
-        (target: number, dur: number) => {
-            const delta = shortestDelta(cumulativeHeadingRef.current % 360, target);
-            const next = cumulativeHeadingRef.current + delta;
-            cumulativeHeadingRef.current = next;
-            if (headingAnimRef.current) headingAnimRef.current.stop();
-            headingAnimRef.current = Animated.timing(animatedHeading, {
-                toValue: next,
-                duration: dur,
-                useNativeDriver: false,
-            });
-            headingAnimRef.current.start(() => {
-                headingAnimRef.current = null;
-            });
-        },
-        [animatedHeading],
-    );
+    const animateHeadingTo = useRef((target: number, dur: number) => {
+        const delta = shortestDelta(cumulativeHeading.current % 360, target);
+        const next  = cumulativeHeading.current + delta;
+        cumulativeHeading.current = next;
+        if (headingAnim.current) headingAnim.current.stop();
+        headingAnim.current = Animated.timing(animatedHeading, {
+            toValue: next,
+            duration: dur,
+            useNativeDriver: false,
+        });
+        headingAnim.current.start(() => { headingAnim.current = null; });
+    }).current;
 
-    // ── rAF animation loop ────────────────────────────────────────────────────
+    // ── Interval tick ─────────────────────────────────────────────────────────
+    // Defined as a ref so it never gets a new identity and the interval closure
+    // always calls the latest version.
 
-    const drainQueue = useCallback(() => {
-        if (queue.current.length === 0) {
-            running.current = false;
-            rafRef.current = null;
-            return;
-        }
+    const tickRef = useRef(() => {
+        const from = fromCoord.current;
+        const to   = toCoord.current;
+        if (!from || !to) return;
 
-        const entry = queue.current[0];
-        const { path, duration } = entry;
+        const elapsed = Date.now() - startTime.current;
+        const rawT    = Math.min(elapsed / DURATION, 1);
+        const t       = ease(rawT);
 
-        // Pre-compute cumulative distances along the path for proportional progress
-        const segLengths: number[] = [];
-        let totalLength = 0;
-        for (let i = 1; i < path.length; i++) {
-            const d = distanceM(path[i - 1], path[i]);
-            segLengths.push(d);
-            totalLength += d;
-        }
-        // Fallback: snap to end if all points are identical
-        if (totalLength === 0) {
-            setAnimatedCoord(path[path.length - 1]);
-            currentPosRef.current = path[path.length - 1];
-            queue.current.shift();
-            rafRef.current = requestAnimationFrame(drainQueue);
-            return;
-        }
+        setCoord.current({
+            latitude:  lerp(from.latitude,  to.latitude,  t),
+            longitude: lerp(from.longitude, to.longitude, t),
+        });
 
-        const startTime = Date.now();
-
-        // Kick off bearing animation for the first segment immediately
-        if (path.length >= 2) {
-            animateHeadingTo(bearing(path[0], path[1]), Math.min(duration * 0.3, 800));
-        }
-
-        const tick = () => {
-            const elapsed = Date.now() - startTime;
-            // Ease-in-out cubic
-            const rawT = Math.min(elapsed / duration, 1);
-            const t = rawT < 0.5
-                ? 2 * rawT * rawT
-                : 1 - Math.pow(-2 * rawT + 2, 2) / 2;
-
-            const targetDist = t * totalLength;
-
-            // Walk segments to find which one we're currently in
-            let walked = 0;
-            let segIdx = 0;
-            for (let i = 0; i < segLengths.length; i++) {
-                if (walked + segLengths[i] >= targetDist) {
-                    segIdx = i;
-                    break;
-                }
-                walked += segLengths[i];
-                segIdx = i + 1;
+        // Snap to destination and stop interval when done
+        if (rawT >= 1) {
+            setCoord.current(to);
+            fromCoord.current = to;
+            if (intervalId.current !== null) {
+                clearInterval(intervalId.current);
+                intervalId.current = null;
             }
-            segIdx = Math.min(segIdx, path.length - 2);
+        }
+    });
 
-            const segStart = path[segIdx];
-            const segEnd   = path[segIdx + 1];
-            const segLen   = segLengths[segIdx] ?? 0;
-            const segT     = segLen > 0 ? (targetDist - walked) / segLen : 0;
+    // Keep tickRef current without recreating the interval
+    tickRef.current = () => {
+        const from = fromCoord.current;
+        const to   = toCoord.current;
+        if (!from || !to) return;
 
-            setAnimatedCoord({
-                latitude:  lerp(segStart.latitude,  segEnd.latitude,  segT),
-                longitude: lerp(segStart.longitude, segEnd.longitude, segT),
-            });
+        const elapsed = Date.now() - startTime.current;
+        const rawT    = Math.min(elapsed / DURATION, 1);
+        const t       = ease(rawT);
 
-            // Update bearing when entering a new segment
-            if (segIdx < path.length - 2) {
-                animateHeadingTo(
-                    bearing(segStart, segEnd),
-                    Math.min((segLengths[segIdx] / (totalLength || 1)) * duration, 600),
-                );
-            }
-
-            if (rawT < 1) {
-                rafRef.current = requestAnimationFrame(tick);
-            } else {
-                const last = path[path.length - 1];
-                setAnimatedCoord(last);
-                currentPosRef.current = last;
-                queue.current.shift();
-                rafRef.current = requestAnimationFrame(drainQueue);
-            }
+        const interpolated: AnimatedCoord = {
+            latitude:  lerp(from.latitude,  to.latitude,  t),
+            longitude: lerp(from.longitude, to.longitude, t),
         };
+        // Keep currentCoord up-to-date so new segments start from the right place
+        currentCoord.current = interpolated;
+        setCoord.current(interpolated);
 
-        rafRef.current = requestAnimationFrame(tick);
-    }, [animateHeadingTo]);
-
-    // ── Enqueue a road segment ────────────────────────────────────────────────
-
-    const enqueue = useCallback(
-        (path: AnimatedCoord[], dur: number) => {
-            queue.current.push({ path, duration: dur });
-            if (!running.current) {
-                running.current = true;
-                rafRef.current = requestAnimationFrame(drainQueue);
+        if (rawT >= 1) {
+            setCoord.current(to);
+            currentCoord.current = to;
+            fromCoord.current = to;
+            if (intervalId.current !== null) {
+                clearInterval(intervalId.current);
+                intervalId.current = null;
             }
-        },
-        [drainQueue],
-    );
+        }
+    };
+
+    // ── Start a new interpolation segment ────────────────────────────────────
+
+    const startSegment = useRef((from: AnimatedCoord, to: AnimatedCoord) => {
+        // Update heading immediately so the arrow rotates before we start moving
+        const hdg = bearing(from.latitude, from.longitude, to.latitude, to.longitude);
+        animateHeadingTo(hdg, Math.min(DURATION * 0.25, 600));
+
+        fromCoord.current = from;
+        toCoord.current   = to;
+        startTime.current = Date.now();
+
+        // Clear any in-flight interval before starting a new one
+        if (intervalId.current !== null) {
+            clearInterval(intervalId.current);
+        }
+        intervalId.current = setInterval(() => tickRef.current(), TICK_MS);
+    }).current;
 
     // ── Public API ────────────────────────────────────────────────────────────
 
-    const setInitial = useCallback(
-        (lat: number, lng: number) => {
-            if (rafRef.current !== null) {
-                cancelAnimationFrame(rafRef.current);
-                rafRef.current = null;
-            }
-            queue.current = [];
-            running.current = false;
-            const coord: AnimatedCoord = { latitude: lat, longitude: lng };
-            currentPosRef.current = coord;
-            setAnimatedCoord(coord);
-            animatedHeading.setValue(0);
-            cumulativeHeadingRef.current = 0;
-        },
-        [animatedHeading],
-    );
+    const setInitial = useCallback((lat: number, lng: number) => {
+        // Stop any running animation
+        if (intervalId.current !== null) {
+            clearInterval(intervalId.current);
+            intervalId.current = null;
+        }
+        const coord: AnimatedCoord = { latitude: lat, longitude: lng };
+        fromCoord.current    = coord;
+        toCoord.current      = coord;
+        currentCoord.current = coord;
+        setCoord.current(coord);
+        animatedHeading.setValue(0);
+        cumulativeHeading.current = 0;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [animatedHeading]);
 
-    const updateTarget = useCallback(
-        (lat: number, lng: number) => {
-            const from = currentPosRef.current;
+    const updateTarget = useCallback((lat: number, lng: number) => {
+        const from = fromCoord.current;
 
-            if (!from) {
-                setInitial(lat, lng);
-                return;
-            }
+        if (!from) {
+            setInitial(lat, lng);
+            return;
+        }
 
-            const to: AnimatedCoord = { latitude: lat, longitude: lng };
+        const to: AnimatedCoord = { latitude: lat, longitude: lng };
 
-            // Skip negligible moves (< 2 m)
-            if (distanceM(from, to) < 2) return;
+        // Skip tiny moves (< 1 m) — compare against the live interpolated position
+        const liveFrom = currentCoord.current ?? from;
+        const dLat = to.latitude  - liveFrom.latitude;
+        const dLng = to.longitude - liveFrom.longitude;
+        const approxMetres = Math.sqrt(dLat * dLat + dLng * dLng) * 111320;
+        if (approxMetres < 1) return;
 
-            // Short hops < 30 m — straight-line is fine, avoid network latency
-            if (distanceM(from, to) < 30) {
-                enqueue([from, to], DURATION);
-                currentPosRef.current = to;
-                return;
-            }
-
-            // Optimistically advance currentPosRef so concurrent calls chain correctly
-            currentPosRef.current = to;
-
-            fetchRoadPath(from, to).then((path) => {
-                if (path && path.length >= 2) {
-                    enqueue(path, DURATION);
-                } else {
-                    enqueue([from, to], DURATION);
-                }
-            });
-        },
-        [enqueue, setInitial, DURATION],
-    );
+        // ── Start new segment from the CURRENT interpolated position ──────────
+        // Using currentCoord (live animated position) instead of fromCoord
+        // (animation's original start) prevents the marker from jumping
+        // backwards when a new GPS fix arrives mid-animation (the "to and fro" bug).
+        startSegment(liveFrom, to);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [setInitial]);
 
     // Cleanup on unmount
     useEffect(() => {
         return () => {
-            if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
-            if (headingAnimRef.current) headingAnimRef.current.stop();
+            if (intervalId.current !== null) clearInterval(intervalId.current);
+            if (headingAnim.current) headingAnim.current.stop();
         };
     }, []);
 

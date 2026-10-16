@@ -69,6 +69,10 @@ export default function RootLayout() {
               name="trip_completed"
               options={{ drawerItemStyle: { display: 'none' } }}
             />
+            <Drawer.Screen
+              name="scheduled_rides"
+              options={{ drawerItemStyle: { display: 'none' } }}
+            />
           </Drawer>
         </AuthProvider>
       </ThemeProvider>

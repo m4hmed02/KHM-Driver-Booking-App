@@ -68,3 +68,31 @@ export const makeDriverOfferApi = async (bookingId: string, fare: number): Promi
     throw new Error(message);
   }
 };
+
+// Fetch all scheduled bookings available for drivers to accept
+export const getScheduledBookingsApi = async (): Promise<Booking[]> => {
+  const headers = await getAuthHeader();
+  try {
+    const response = await axios.get(`${API_URL}/bookings/scheduled`, { headers });
+    return response.data;
+  } catch (error: any) {
+    const message = error.response?.data?.message || 'Failed to fetch scheduled bookings';
+    throw new Error(message);
+  }
+};
+
+// Accept a scheduled booking directly (no bidding for scheduled rides)
+export const acceptScheduledBookingApi = async (bookingId: string): Promise<Booking> => {
+  const headers = await getAuthHeader();
+  try {
+    const response = await axios.patch(
+      `${API_URL}/bookings/${bookingId}/accept-scheduled`,
+      {},
+      { headers }
+    );
+    return response.data;
+  } catch (error: any) {
+    const message = error.response?.data?.message || 'Failed to accept scheduled booking';
+    throw new Error(message);
+  }
+};

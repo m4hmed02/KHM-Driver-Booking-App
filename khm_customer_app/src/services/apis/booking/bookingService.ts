@@ -119,3 +119,15 @@ export const rejectDriverOfferApi = async (bookingId: string, driverId: string):
     throw new Error(message);
   }
 };
+
+// Fetch all bookings belonging to the logged-in customer
+export const getMyBookingsApi = async (): Promise<Booking[]> => {
+  const headers = await getAuthHeader();
+  try {
+    const response = await axios.get(`${API_URL}/bookings/my`, { headers });
+    return response.data;
+  } catch (error: any) {
+    const message = error.response?.data?.message || 'Failed to fetch your bookings';
+    throw new Error(message);
+  }
+};

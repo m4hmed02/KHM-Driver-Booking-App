@@ -6,7 +6,8 @@ exports.createBooking = async (req, res) => {
     const booking = await bookingService.createBooking(customerId, req.body);
 
     const io = req.app.get('io');
-    io.emit('new_booking_request', booking); // Notify all drivers
+    // Emit to all drivers — they will filter by bookingType on their end.
+    io.emit('new_booking_request', booking);
 
     res.status(201).json(booking);
   } catch (error) {
@@ -20,6 +21,41 @@ exports.getAvailableBookings = async (req, res) => {
     res.status(200).json(bookings);
   } catch (error) {
     res.status(500).json({ message: error.message });
+  }
+};
+
+exports.getScheduledBookings = async (req, res) => {
+  try {
+    const bookings = await bookingService.getScheduledBookings();
+    res.status(200).json(bookings);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+exports.acceptScheduledBooking = async (req, res) => {
+  try {
+    const driverId = req.user.id;
+    const booking = await bookingService.acceptScheduledBooking(req.params.id, driverId);
+
+    const io = req.app.get('io');
+    const connectedUsers = req.app.get('connectedUsers');
+
+    // Notify the customer their scheduled ride has been accepted
+    const customerId = booking.customer._id
+      ? booking.customer._id.toString()
+      : booking.customer.toString();
+    const customerSocketId = connectedUsers.get(customerId);
+    if (customerSocketId) {
+      io.to(customerSocketId).emit('booking_status_updated', {
+        ...booking.toObject(),
+        customerId,
+      });
+    }
+
+    res.status(200).json(booking);
+  } catch (error) {
+    res.status(error.statusCode || 500).json({ message: error.message });
   }
 };
 
@@ -73,6 +109,16 @@ exports.getBookingStatus = async (req, res) => {
     res.status(200).json(booking);
   } catch (error) {
     res.status(error.statusCode || 500).json({ message: error.message });
+  }
+};
+
+exports.getMyBookings = async (req, res) => {
+  try {
+    const customerId = req.user.id;
+    const bookings = await bookingService.getMyBookings(customerId);
+    res.status(200).json(bookings);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
   }
 };
 

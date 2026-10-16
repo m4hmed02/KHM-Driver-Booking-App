@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import { View, Text, TouchableOpacity, Image, ScrollView, ActivityIndicator, Alert } from 'react-native';
+import { View, Text, TouchableOpacity, ScrollView, ActivityIndicator, Alert } from 'react-native';
+import { Image } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { styles } from '../styles/profile.styles';
@@ -39,17 +40,15 @@ export default function Profile() {
     );
   }
 
-  const serverBaseUrl = process.env.EXPO_PUBLIC_API_URL?.replace('/api', '') || '';
-
-  const getAvatarSource = () => {
-    if (user?.avatar && user.avatar.trim() !== '') {
-      const uri = user.avatar.startsWith('http')
-        ? user.avatar
-        : `${serverBaseUrl}${user.avatar}`;
-      return { uri };
-    }
-    return require('../../assets/images/defaultAvatarPlaceholder.png');
+  const getAvatarUri = (): string | null => {
+    if (!user?.avatar || user.avatar.trim() === '') return null;
+    if (user.avatar.startsWith('http')) return user.avatar;
+    // Strip trailing /api or /api/ to get the server root, then join the path
+    const baseUrl = (process.env.EXPO_PUBLIC_API_URL || '').replace(/\/api\/?$/, '');
+    return `${baseUrl}${user.avatar.startsWith('/') ? '' : '/'}${user.avatar}`;
   };
+
+  const avatarUri = getAvatarUri();
 
   return (
     <View style={styles.container}>
@@ -58,8 +57,10 @@ export default function Profile() {
         
         <View style={{ alignItems: 'center', marginBottom: 20, paddingBottom: 24, borderBottomWidth: 1, borderBottomColor: Colors.light.border }}>
           <Image
-            source={getAvatarSource()}
+            source={avatarUri ? { uri: avatarUri } : require('../../assets/images/defaultAvatarPlaceholder.png')}
             style={{ width: 90, height: 90, borderRadius: 45, marginBottom: 16, borderWidth: 3, borderColor: Colors.light.primary }}
+            contentFit="cover"
+            cachePolicy="memory-disk"
           />
           <Text style={{ fontSize: 24, fontWeight: '700', color: Colors.light.text, marginBottom: 4 }}>
             {user?.name || 'User'}
@@ -76,6 +77,14 @@ export default function Profile() {
                 <Ionicons name="time-outline" size={20} color={Colors.light.primary} />
               </View>
               <Text style={styles.menuText}>Trip History</Text>
+              <Ionicons name="chevron-forward" size={18} color={Colors.light.icon} />
+            </TouchableOpacity>
+
+            <TouchableOpacity style={[styles.menuItem, { paddingHorizontal: 0, borderBottomWidth: 1, borderBottomColor: Colors.light.border }]} onPress={() => router.push('/scheduled_rides')}>
+              <View style={styles.menuIconContainer}>
+                <Ionicons name="calendar-outline" size={20} color={Colors.light.primary} />
+              </View>
+              <Text style={styles.menuText}>Scheduled Rides</Text>
               <Ionicons name="chevron-forward" size={18} color={Colors.light.icon} />
             </TouchableOpacity>
 

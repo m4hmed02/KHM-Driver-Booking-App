@@ -4,13 +4,13 @@ import { useState } from 'react';
 import {
     ActivityIndicator,
     Alert,
-    Image,
     ScrollView,
     StyleSheet,
     Text,
     TouchableOpacity,
     View
 } from 'react-native';
+import { Image } from 'expo-image';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Colors } from '../constants/theme';
 import { useAuth } from '../context/AuthContext';
@@ -22,6 +22,7 @@ export default function Profile(props?: any) {
     const insets = useSafeAreaInsets();
     const { user, isLoading, logout } = useAuth();
     const [isLoggingOut, setIsLoggingOut] = useState(false);
+    const [imageError, setImageError] = useState(false);
 
     const closeDrawer = () => {
         if (navigation) {
@@ -60,16 +61,16 @@ export default function Profile(props?: any) {
         );
     }
 
-    const serverBaseUrl = process.env.EXPO_PUBLIC_API_URL?.split('/api')[0] ?? '';
-    const avatarPath = user?.avatar?.trim();
-    const avatarSource =
-        avatarPath
-            ? {
-                  uri: avatarPath.startsWith('http')
-                      ? avatarPath
-                      : `${serverBaseUrl}${avatarPath.startsWith('/') ? '' : '/'}${avatarPath}`,
-              }
-            : require('../../assets/images/defaultAvatarPlaceholder.png');
+    const getAvatarUri = (): string | null => {
+        if (!user?.avatar || user.avatar.trim() === '') return null;
+        if (user.avatar.startsWith('http')) return user.avatar;
+        const baseUrl = (process.env.EXPO_PUBLIC_API_URL || '').replace(/\/api\/?$/, '');
+        const cleanAvatar = user.avatar.replace(/\\/g, '/');
+        return `${baseUrl}${cleanAvatar.startsWith('/') ? '' : '/'}${cleanAvatar}`;
+    };
+
+    const avatarUri = getAvatarUri();
+    const defaultPlaceholder = require('../../assets/images/defaultAvatarPlaceholder.png');
 
     return (
         <DrawerContentScrollView {...props} contentContainerStyle={[styles.container, { paddingTop: insets.top || 20 }]}>
@@ -82,7 +83,15 @@ export default function Profile(props?: any) {
             {/* ── Avatar + name ── */}
             <View style={styles.profileSection}>
                 <View style={styles.avatarWrapper}>
-                    <Image source={avatarSource} style={styles.avatar} />
+                    <Image
+                        source={avatarUri && !imageError ? { uri: avatarUri } : defaultPlaceholder}
+                        placeholder={defaultPlaceholder}
+                        style={styles.avatar}
+                        contentFit="cover"
+                        cachePolicy="memory-disk"
+                        transition={200}
+                        onError={() => setImageError(true)}
+                    />
                     {/* Online indicator dot */}
                     <View style={styles.onlineDot} />
                 </View>
@@ -116,6 +125,11 @@ export default function Profile(props?: any) {
                     icon="time-outline"
                     label="Trip History"
                     onPress={() => navigateTo('/trip_history')}
+                />
+                <MenuItem
+                    icon="calendar-outline"
+                    label="Scheduled Rides"
+                    onPress={() => navigateTo('/scheduled_rides')}
                 />
                 <MenuItem
                     icon="settings-outline"
@@ -198,6 +212,8 @@ const styles = StyleSheet.create({
         borderRadius: 44,
         borderWidth: 3,
         borderColor: Colors.light.primary,
+        backgroundColor: Colors.light.border,
+        overflow: 'hidden',
     },
     onlineDot: {
         position: 'absolute',

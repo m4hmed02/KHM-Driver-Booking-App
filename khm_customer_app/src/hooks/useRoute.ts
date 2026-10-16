@@ -151,5 +151,10 @@ export const useRoute = () => {
     setIsLoading(false);
   }, []);
 
-  return { fetchRoute, routeCoordinates, distance, duration, isLoading, error };
+  return { fetchRoute, routeCoordinates, distance, duration, isLoading, error, clearRoute: useCallback(() => {
+    setRouteCoordinates([]);
+    setDistance(null);
+    setDuration(null);
+    setError(null);
+  }, []) };
 };

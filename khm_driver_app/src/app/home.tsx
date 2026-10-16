@@ -23,7 +23,9 @@ import { DraggableBottomSheet, DraggableBottomSheetRef } from '../components/Dra
 import { Colors } from '../constants/theme';
 import { useAuth } from '../context/AuthContext';
 import {
+    acceptScheduledBookingApi,
     getAvailableBookingsApi,
+    getScheduledBookingsApi,
     makeDriverOfferApi,
 } from '../services/apis/booking/bookingService';
 import { Booking, CustomerInfo } from '../services/apis/booking/type';
@@ -33,8 +35,6 @@ import { styles } from '../styles/home.styles';
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const { height: SCREEN_HEIGHT } = Dimensions.get('window');
-// Minimum visible height of the bottom sheet at snap index 0 (35% of screen).
-// Used to pad map's fitToCoordinates so markers aren't hidden behind the sheet.
 const BOTTOM_SHEET_MIN_HEIGHT = SCREEN_HEIGHT * 0.48;
 
 const DEFAULT_REGION: Region = {
@@ -53,7 +53,20 @@ const getCustomerInfo = (customer: Booking['customer']): CustomerInfo | null => 
     return null;
 };
 
-// ─── RideCard ─────────────────────────────────────────────────────────────────
+/** Format ISO date string to a human-readable date + time */
+const formatScheduledTime = (iso: string | null): string => {
+    if (!iso) return 'Scheduled';
+    const d = new Date(iso);
+    return d.toLocaleString(undefined, {
+        weekday: 'short',
+        month: 'short',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+    });
+};
+
+// ─── RideCard (driver_now) ────────────────────────────────────────────────────
 
 interface RideCardProps {
     booking: Booking;
@@ -63,7 +76,6 @@ interface RideCardProps {
 
 function RideCard({ booking, hasOffered, onMakeOffer }: RideCardProps) {
     const customer = getCustomerInfo(booking.customer);
-    const typeLabel = booking.bookingType === 'schedule_driver' ? 'Scheduled' : 'Now';
 
     return (
         <View style={styles.rideCard}>
@@ -85,7 +97,6 @@ function RideCard({ booking, hasOffered, onMakeOffer }: RideCardProps) {
                 <View style={styles.fareContainer}>
                     <Text style={styles.fareLabel}>Offered fare</Text>
                     <Text style={styles.fareAmount}>{formatFare(booking.estimatedFare)}</Text>
-                    <Text style={styles.bookingType}>{typeLabel}</Text>
                 </View>
             </View>
 
@@ -128,7 +139,85 @@ function RideCard({ booking, hasOffered, onMakeOffer }: RideCardProps) {
     );
 }
 
-// ─── OfferModal ───────────────────────────────────────────────────────────────
+// ─── ScheduledRideCard ────────────────────────────────────────────────────────
+
+interface ScheduledRideCardProps {
+    booking: Booking;
+    onAccept: (booking: Booking) => void;
+    isAccepting: boolean;
+}
+
+function ScheduledRideCard({ booking, onAccept, isAccepting }: ScheduledRideCardProps) {
+    const customer = getCustomerInfo(booking.customer);
+
+    return (
+        <View style={styles.rideCard}>
+            {/* Scheduled time badge */}
+            <View style={styles.scheduledTimeBadge}>
+                <Ionicons name="calendar-outline" size={13} color={Colors.light.primaryDark} />
+                <Text style={styles.scheduledTimeText}>
+                    {formatScheduledTime(booking.scheduledTime)}
+                </Text>
+            </View>
+
+            {/* Header: customer info + fare */}
+            <View style={styles.rideCardHeader}>
+                <View style={styles.customerRow}>
+                    <Ionicons
+                        name="person-circle-outline"
+                        size={36}
+                        color={Colors.light.secondaryText}
+                    />
+                    <View>
+                        <Text style={styles.customerName}>{customer?.name ?? 'Customer'}</Text>
+                        {customer?.phone ? (
+                            <Text style={styles.customerPhone}>{customer.phone}</Text>
+                        ) : null}
+                    </View>
+                </View>
+                <View style={styles.fareContainer}>
+                    <Text style={styles.fareLabel}>Offered fare</Text>
+                    <Text style={styles.fareAmount}>{formatFare(booking.estimatedFare)}</Text>
+                </View>
+            </View>
+
+            {/* Route timeline */}
+            <View style={styles.routeContainer}>
+                <View style={styles.routeTimeline}>
+                    <View style={styles.routeDotGreen} />
+                    <View style={styles.routeLine} />
+                    <View style={styles.routeDotBlack} />
+                </View>
+                <View style={styles.routeAddresses}>
+                    <Text style={styles.routeAddress} numberOfLines={2}>
+                        {booking.pickupLocation.address}
+                    </Text>
+                    <Text style={styles.routeAddressSecondary} numberOfLines={2}>
+                        {booking.dropoffLocation.address}
+                    </Text>
+                </View>
+            </View>
+
+            {/* Accept button — direct accept, no bidding */}
+            <View style={styles.rideCardFooter}>
+                <TouchableOpacity
+                    style={[styles.offerButton, isAccepting && styles.offerButtonRequested]}
+                    onPress={() => !isAccepting && onAccept(booking)}
+                    activeOpacity={isAccepting ? 1 : 0.85}
+                    disabled={isAccepting}
+                >
+                    {isAccepting ? (
+                        <ActivityIndicator size="small" color="#fff" />
+                    ) : (
+                        <Text style={styles.offerButtonText}>Accept Ride</Text>
+                    )}
+                </TouchableOpacity>
+            </View>
+        </View>
+    );
+}
+
+// ─── OfferModal (driver_now bidding) ─────────────────────────────────────────
 
 interface OfferModalProps {
     visible: boolean;
@@ -142,7 +231,6 @@ function OfferModal({ visible, booking, onClose, onOfferSubmitted }: OfferModalP
     const [isFareInputFocused, setIsFareInputFocused] = useState(false);
     const [isSubmitting, setIsSubmitting] = useState(false);
 
-    // Pre-fill with the customer's offered fare when the modal opens
     useEffect(() => {
         if (visible && booking) {
             setFareText(booking.estimatedFare.toFixed(0));
@@ -161,7 +249,6 @@ function OfferModal({ visible, booking, onClose, onOfferSubmitted }: OfferModalP
         setIsSubmitting(true);
         try {
             const updated = await makeDriverOfferApi(booking._id, fare);
-            // Parent handles: closing modal + toast + marking card as "Requested"
             onOfferSubmitted(updated);
         } catch (err) {
             setIsSubmitting(false);
@@ -177,97 +264,52 @@ function OfferModal({ visible, booking, onClose, onOfferSubmitted }: OfferModalP
     const customer = getCustomerInfo(booking.customer);
 
     return (
-        <Modal
-            visible={visible}
-            transparent
-            animationType="slide"
-            onRequestClose={onClose}
-        >
-            <TouchableOpacity
-                style={styles.modalOverlay}
-                activeOpacity={1}
-                onPress={onClose}
-            >
+        <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
+            <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={onClose}>
                 <TouchableOpacity activeOpacity={1} style={styles.modalSheet}>
                     <View style={styles.modalHandle} />
-
-                    {/* Offer form */}
-                    <ScrollView
-                        keyboardShouldPersistTaps="handled"
-                        showsVerticalScrollIndicator={false}
-                    >
+                    <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
                         <Text style={styles.modalTitle}>Ride Details</Text>
                         <Text style={styles.modalSubtitle}>
                             Review the trip and submit your fare offer.
                         </Text>
 
-                        {/* Customer */}
                         {customer && (
                             <View style={styles.modalSection}>
                                 <Text style={styles.modalSectionTitle}>Customer</Text>
                                 <View style={styles.modalDetailRow}>
-                                    <Ionicons
-                                        name="person-outline"
-                                        size={16}
-                                        color={Colors.light.secondaryText}
-                                    />
+                                    <Ionicons name="person-outline" size={16} color={Colors.light.secondaryText} />
                                     <Text style={styles.modalDetailText}>{customer.name}</Text>
                                 </View>
                             </View>
                         )}
 
-                        {/* Route */}
                         <View style={styles.modalSection}>
                             <Text style={styles.modalSectionTitle}>Route</Text>
                             <View style={styles.modalDetailRow}>
-                                <Ionicons
-                                    name="radio-button-on"
-                                    size={16}
-                                    color={Colors.light.primary}
-                                />
-                                <Text style={styles.modalDetailText}>
-                                    {booking.pickupLocation.address}
-                                </Text>
+                                <Ionicons name="radio-button-on" size={16} color={Colors.light.primary} />
+                                <Text style={styles.modalDetailText}>{booking.pickupLocation.address}</Text>
                             </View>
                             <View style={styles.modalDetailRow}>
-                                <Ionicons
-                                    name="location"
-                                    size={16}
-                                    color={Colors.light.red}
-                                />
-                                <Text style={styles.modalDetailText}>
-                                    {booking.dropoffLocation.address}
-                                </Text>
+                                <Ionicons name="location" size={16} color={Colors.light.red} />
+                                <Text style={styles.modalDetailText}>{booking.dropoffLocation.address}</Text>
                             </View>
                         </View>
 
-                        {/* Customer's offered fare */}
                         <View style={styles.modalSection}>
                             <Text style={styles.modalSectionTitle}>Customer's Offer</Text>
                             <View style={styles.fareRow}>
-                                <Ionicons
-                                    name="cash-outline"
-                                    size={22}
-                                    color={Colors.light.primary}
-                                />
+                                <Ionicons name="cash-outline" size={22} color={Colors.light.primary} />
                                 <View style={styles.fareRowText}>
                                     <Text style={styles.fareRowLabel}>Offered fare</Text>
-                                    <Text style={styles.fareRowAmount}>
-                                        {formatFare(booking.estimatedFare)}
-                                    </Text>
+                                    <Text style={styles.fareRowAmount}>{formatFare(booking.estimatedFare)}</Text>
                                 </View>
                             </View>
                         </View>
 
-                        {/* Driver fare input */}
                         <View style={styles.modalSection}>
                             <Text style={styles.fareInputLabel}>Your Offer (AED)</Text>
-                            <View
-                                style={[
-                                    styles.fareInputRow,
-                                    isFareInputFocused && styles.fareInputRowFocused,
-                                ]}
-                            >
+                            <View style={[styles.fareInputRow, isFareInputFocused && styles.fareInputRowFocused]}>
                                 <Text style={styles.fareInputCurrency}>AED</Text>
                                 <TextInput
                                     style={styles.fareInput}
@@ -282,16 +324,11 @@ function OfferModal({ visible, booking, onClose, onOfferSubmitted }: OfferModalP
                                     onSubmitEditing={handleSubmit}
                                 />
                             </View>
-                            <Text style={styles.fareHint}>
-                                You can match or raise the customer's offer.
-                            </Text>
+                            <Text style={styles.fareHint}>You can match or raise the customer's offer.</Text>
                         </View>
 
                         <TouchableOpacity
-                            style={[
-                                styles.submitOfferButton,
-                                isSubmitting && styles.submitOfferButtonDisabled,
-                            ]}
+                            style={[styles.submitOfferButton, isSubmitting && styles.submitOfferButtonDisabled]}
                             onPress={handleSubmit}
                             disabled={isSubmitting}
                             activeOpacity={0.85}
@@ -315,6 +352,8 @@ function OfferModal({ visible, booking, onClose, onOfferSubmitted }: OfferModalP
 
 // ─── Home Screen ──────────────────────────────────────────────────────────────
 
+type TabType = 'now' | 'scheduled';
+
 export default function Home() {
     const { user } = useAuth();
     const router = useRouter();
@@ -322,33 +361,31 @@ export default function Home() {
 
     const mapRef = useRef<MapView>(null);
     const [driverRegion, setDriverRegion] = useState<Region | null>(null);
-    const [isLocating, setIsLocating] = useState(true);
 
-    const [rides, setRides] = useState<Booking[]>([]);
-    const [isLoadingRides, setIsLoadingRides] = useState(false);
+    // ── Tab state ─────────────────────────────────────────────────────────────
+    const [activeTab, setActiveTab] = useState<TabType>('now');
 
-    // Track booking IDs the driver has already submitted an offer for
+    // ── Ride Now (driver_now) state ───────────────────────────────────────────
+    const [nowRides, setNowRides] = useState<Booking[]>([]);
+    const [isLoadingNow, setIsLoadingNow] = useState(false);
     const [offeredBookingIds, setOfferedBookingIds] = useState<Set<string>>(new Set());
-
     const [selectedRide, setSelectedRide] = useState<Booking | null>(null);
     const [offerModalVisible, setOfferModalVisible] = useState(false);
+
+    // ── Scheduled (schedule_driver) state ────────────────────────────────────
+    const [scheduledRides, setScheduledRides] = useState<Booking[]>([]);
+    const [isLoadingScheduled, setIsLoadingScheduled] = useState(false);
+    const [acceptingId, setAcceptingId] = useState<string | null>(null);
 
     const sheetRef = useRef<DraggableBottomSheetRef>(null);
 
     // ── GPS location ──────────────────────────────────────────────────────────
-
     useEffect(() => {
         (async () => {
             try {
                 const { status } = await Location.requestForegroundPermissionsAsync();
-                if (status !== 'granted') {
-                    setDriverRegion(DEFAULT_REGION);
-                    setIsLocating(false);
-                    return;
-                }
-                const loc = await Location.getCurrentPositionAsync({
-                    accuracy: Location.Accuracy.Balanced,
-                });
+                if (status !== 'granted') { setDriverRegion(DEFAULT_REGION); return; }
+                const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
                 setDriverRegion({
                     latitude: loc.coords.latitude,
                     longitude: loc.coords.longitude,
@@ -357,50 +394,73 @@ export default function Home() {
                 });
             } catch {
                 setDriverRegion(DEFAULT_REGION);
-            } finally {
-                setIsLocating(false);
             }
         })();
     }, []);
 
-    // ── Socket listeners ──────────────────────────────────────────────────────
+    // ── Fetch rides ───────────────────────────────────────────────────────────
+    const fetchNowRides = useCallback(async () => {
+        setIsLoadingNow(true);
+        try {
+            const data = await getAvailableBookingsApi();   // driver_now only
+            setNowRides(data);
+        } catch (err) {
+            Alert.alert('Failed to Load', err instanceof Error ? err.message : 'Could not fetch rides.');
+        } finally {
+            setIsLoadingNow(false);
+        }
+    }, []);
 
+    const fetchScheduledRides = useCallback(async () => {
+        setIsLoadingScheduled(true);
+        try {
+            const data = await getScheduledBookingsApi();  // schedule_driver only
+            setScheduledRides(data);
+        } catch (err) {
+            Alert.alert('Failed to Load', err instanceof Error ? err.message : 'Could not fetch scheduled rides.');
+        } finally {
+            setIsLoadingScheduled(false);
+        }
+    }, []);
+
+    useEffect(() => { fetchNowRides(); }, [fetchNowRides]);
+    useEffect(() => { fetchScheduledRides(); }, [fetchScheduledRides]);
+
+    // ── Socket listeners ──────────────────────────────────────────────────────
     useEffect(() => {
         if (!user?.token) return;
-
         const socket = connectSocket(user.token);
-
-        // Register with the server so it can map userId → socketId for targeted events
         socket.emit('register' as any, user._id);
 
-        // ── Catch-all: log EVERY event so we can see the real event name in Metro logs
         const debugListener = (eventName: string, ...args: any[]) => {
-            console.warn(
-                `[HOME SOCKET] event="${eventName}" data=${JSON.stringify(args).substring(0, 300)}`
-            );
+            console.warn(`[HOME SOCKET] event="${eventName}" data=${JSON.stringify(args).substring(0, 300)}`);
         };
         socket.onAny(debugListener);
 
-        // ── Handle a new booking from the server (any possible event name)
+        // New booking pushed from backend — route to the correct list by bookingType
         const handleNewBooking = (payload: any) => {
-            console.log('[HOME] handleNewBooking called with:', JSON.stringify(payload).substring(0, 200));
             const booking = payload?.booking || payload;
-            if (!booking) {
-                console.warn('[HOME] handleNewBooking: no booking in payload');
-                return;
-            }
-            // Normalise _id
+            if (!booking?._id) return;
             if (!booking._id && booking.id) booking._id = booking.id;
-            if (!booking._id) {
-                console.warn('[HOME] handleNewBooking: booking has no _id', booking);
-                return;
-            }
 
-            setRides((prev) => {
-                if (prev.some((r) => r._id === booking._id)) return prev;
-                console.log('[HOME] Adding new booking to rides list:', booking._id);
-                return [booking, ...prev];
-            });
+            if (booking.bookingType === 'schedule_driver') {
+                setScheduledRides((prev) => {
+                    if (prev.some((r) => r._id === booking._id)) return prev;
+                    // Insert sorted by scheduledTime ascending
+                    const next = [...prev, booking].sort((a, b) => {
+                        if (!a.scheduledTime) return 1;
+                        if (!b.scheduledTime) return -1;
+                        return new Date(a.scheduledTime).getTime() - new Date(b.scheduledTime).getTime();
+                    });
+                    return next;
+                });
+            } else {
+                // driver_now
+                setNowRides((prev) => {
+                    if (prev.some((r) => r._id === booking._id)) return prev;
+                    return [booking, ...prev];
+                });
+            }
         };
 
         socket.on('new_booking_request', handleNewBooking);
@@ -410,20 +470,16 @@ export default function Home() {
         socket.on('newBooking', handleNewBooking);
         socket.on('rideRequest', handleNewBooking);
 
+        // Driver's offer was accepted → navigate to active ride
         socket.on('offer_accepted', (payload: any) => {
-            // Payload may be: { bookingId, driverId, booking } OR the full booking object
             const bookingId = payload?.bookingId ?? payload?._id;
             const driverId = payload?.driverId ?? payload?.driver?._id ?? payload?.driver;
-            // Accept if the payload matches this driver (or if no driverId in payload, still accept)
             if (driverId && driverId !== user._id) return;
             setOfferModalVisible(false);
             setSelectedRide(null);
-            setRides((prev) => prev.filter((r) => r._id !== bookingId));
+            setNowRides((prev) => prev.filter((r) => r._id !== bookingId));
             if (bookingId) {
-                router.push({
-                    pathname: '/active_ride',
-                    params: { bookingId },
-                });
+                router.push({ pathname: '/active_ride', params: { bookingId } });
             }
         });
 
@@ -434,33 +490,18 @@ export default function Home() {
             Alert.alert('Offer Declined', 'The customer has declined your offer.');
         });
 
-        const handleBookingRemoved = (payload: { bookingId: string }) => {
-            // Remove from ride list
-            setRides((prev) => prev.filter((r) => r._id !== payload.bookingId));
-
-            // Clean up offered state for this booking
-            setOfferedBookingIds((prev) => {
-                const next = new Set(prev);
-                next.delete(payload.bookingId);
-                return next;
+        // Booking removed (cancelled / expired / accepted by someone else)
+        const handleBookingRemoved = (payload: { bookingId: string; bookingType?: string; status?: string }) => {
+            const id = (payload as any)._id || payload.bookingId;
+            setNowRides((prev) => prev.filter((r) => r._id !== id));
+            setScheduledRides((prev) => prev.filter((r) => r._id !== id));
+            setOfferedBookingIds((prev) => { const n = new Set(prev); n.delete(id); return n; });
+            setSelectedRide((cur) => {
+                if (cur?._id === id) { setOfferModalVisible(false); return null; }
+                return cur;
             });
-
-            // Close modal if driver was viewing this ride
-            setSelectedRide((currentSelected) => {
-                if (currentSelected?._id === payload.bookingId) {
-                    setOfferModalVisible(false);
-                    return null;
-                }
-                return currentSelected;
-            });
-
-            // Always show a toast so the driver knows the request is gone
             if (Platform.OS === 'android') {
-                ToastAndroid.showWithGravity(
-                    'Customer cancelled the request.',
-                    ToastAndroid.LONG,
-                    ToastAndroid.BOTTOM,
-                );
+                ToastAndroid.showWithGravity('Customer cancelled the request.', ToastAndroid.LONG, ToastAndroid.BOTTOM);
             }
         };
 
@@ -470,7 +511,7 @@ export default function Home() {
         socket.on('booking_request_deleted', handleBookingRemoved);
         socket.on('booking_status_updated', (payload) => {
             if (payload.status === 'cancelled' || payload.status === 'accepted') {
-                handleBookingRemoved(payload);
+                handleBookingRemoved(payload as any);
             }
         });
 
@@ -492,35 +533,10 @@ export default function Home() {
         };
     }, [user]);
 
-
-    // ── Fetch available rides ─────────────────────────────────────────────────
-
-    const fetchRides = useCallback(async () => {
-        setIsLoadingRides(true);
-        try {
-            const data = await getAvailableBookingsApi();
-            setRides(data);
-        } catch (err) {
-            Alert.alert(
-                'Failed to Load',
-                err instanceof Error ? err.message : 'Could not fetch available rides.',
-            );
-        } finally {
-            setIsLoadingRides(false);
-        }
-    }, []);
-
-    useEffect(() => {
-        fetchRides();
-    }, [fetchRides]);
-
     // ── Recenter ──────────────────────────────────────────────────────────────
-
     const handleRecenter = useCallback(async () => {
         try {
-            const loc = await Location.getCurrentPositionAsync({
-                accuracy: Location.Accuracy.Balanced,
-            });
+            const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
             const region: Region = {
                 latitude: loc.coords.latitude,
                 longitude: loc.coords.longitude,
@@ -529,55 +545,37 @@ export default function Home() {
             };
             setDriverRegion(region);
             mapRef.current?.animateToRegion(region, 600);
-        } catch {
-            // GPS may be unavailable
-        }
+        } catch { /* GPS unavailable */ }
     }, []);
 
-    // ── Fit map to markers ────────────────────────────────────────────────────
-
+    // ── Fit map to visible tab's markers ─────────────────────────────────────
+    const visibleRides = activeTab === 'now' ? nowRides : scheduledRides;
     useEffect(() => {
-        if (rides.length === 0 || !mapRef.current) return;
-        const coords = rides.map((r) => ({
+        if (visibleRides.length === 0 || !mapRef.current) return;
+        const coords = visibleRides.map((r) => ({
             latitude: r.pickupLocation.latitude,
             longitude: r.pickupLocation.longitude,
         }));
-        if (driverRegion) {
-            coords.push({ latitude: driverRegion.latitude, longitude: driverRegion.longitude });
-        }
+        if (driverRegion) coords.push({ latitude: driverRegion.latitude, longitude: driverRegion.longitude });
         mapRef.current.fitToCoordinates(coords, {
-            edgePadding: {
-                top: 80,
-                right: 40,
-                bottom: BOTTOM_SHEET_MIN_HEIGHT + 40,
-                left: 40,
-            },
+            edgePadding: { top: 80, right: 40, bottom: BOTTOM_SHEET_MIN_HEIGHT + 40, left: 40 },
             animated: true,
         });
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [rides]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [visibleRides]);
 
-    // ── Offer callbacks ───────────────────────────────────────────────────────
-
+    // ── driver_now offer callbacks ────────────────────────────────────────────
     const handleMakeOffer = useCallback((booking: Booking) => {
         setSelectedRide(booking);
         setOfferModalVisible(true);
     }, []);
 
     const handleOfferSubmitted = useCallback((updatedBooking: Booking) => {
-        setSelectedRide(updatedBooking);
-        // Mark this booking as offered so the card shows "Requested"
         setOfferedBookingIds((prev) => new Set([...prev, updatedBooking._id]));
-        // Close modal
         setOfferModalVisible(false);
         setSelectedRide(null);
-        // Show toast
         if (Platform.OS === 'android') {
-            ToastAndroid.showWithGravity(
-                '✅ Offer sent! Waiting for customer response.',
-                ToastAndroid.LONG,
-                ToastAndroid.BOTTOM,
-            );
+            ToastAndroid.showWithGravity('✅ Offer sent! Waiting for customer response.', ToastAndroid.LONG, ToastAndroid.BOTTOM);
         }
     }, []);
 
@@ -586,9 +584,23 @@ export default function Home() {
         setSelectedRide(null);
     }, []);
 
-    // ── Render ────────────────────────────────────────────────────────────────
+    // ── schedule_driver direct-accept ────────────────────────────────────────
+    const handleAcceptScheduled = useCallback(async (booking: Booking) => {
+        setAcceptingId(booking._id);
+        try {
+            const accepted = await acceptScheduledBookingApi(booking._id);
+            // Remove from scheduled list and navigate to active ride
+            setScheduledRides((prev) => prev.filter((r) => r._id !== booking._id));
+            router.push({ pathname: '/active_ride', params: { bookingId: accepted._id } });
+        } catch (err) {
+            Alert.alert('Could not accept', err instanceof Error ? err.message : 'Please try again.');
+        } finally {
+            setAcceptingId(null);
+        }
+    }, [router]);
 
-    const renderRideCard = useCallback(
+    // ── Render helpers ────────────────────────────────────────────────────────
+    const renderNowCard = useCallback(
         ({ item }: { item: Booking }) => (
             <RideCard
                 booking={item}
@@ -599,29 +611,41 @@ export default function Home() {
         [handleMakeOffer, offeredBookingIds],
     );
 
-    const renderEmpty = () => {
-        if (isLoadingRides) {
+    const renderScheduledCard = useCallback(
+        ({ item }: { item: Booking }) => (
+            <ScheduledRideCard
+                booking={item}
+                onAccept={handleAcceptScheduled}
+                isAccepting={acceptingId === item._id}
+            />
+        ),
+        [handleAcceptScheduled, acceptingId],
+    );
+
+    const renderEmpty = (isLoading: boolean, isScheduledTab: boolean) => {
+        if (isLoading) {
             return (
                 <View style={styles.centerContent}>
                     <ActivityIndicator size="large" color={Colors.light.primary} />
-                    <Text style={[styles.emptySubtitle, { marginTop: 12 }]}>
-                        Loading available rides…
-                    </Text>
+                    <Text style={[styles.emptySubtitle, { marginTop: 12 }]}>Loading…</Text>
                 </View>
             );
         }
         return (
             <View style={styles.centerContent}>
                 <Ionicons
-                    name="car-outline"
+                    name={isScheduledTab ? 'calendar-outline' : 'car-outline'}
                     size={52}
                     color={Colors.light.secondaryText}
                     style={styles.emptyIcon}
                 />
-                <Text style={styles.emptyTitle}>No rides available</Text>
+                <Text style={styles.emptyTitle}>
+                    {isScheduledTab ? 'No scheduled rides' : 'No rides available'}
+                </Text>
                 <Text style={styles.emptySubtitle}>
-                    New requests will appear here automatically.{'\n'}
-                    Pull down to refresh manually.
+                    {isScheduledTab
+                        ? 'Scheduled requests will appear here.'
+                        : 'New requests will appear here automatically.\nPull down to refresh manually.'}
                 </Text>
             </View>
         );
@@ -638,25 +662,17 @@ export default function Home() {
                 region={driverRegion ?? undefined}
                 showsUserLocation
                 showsMyLocationButton={false}
-                onRegionChangeComplete={() => {
-                    // Allow free map movement after initial positioning
-                    if (driverRegion !== null) setDriverRegion(null);
-                }}
+                onRegionChangeComplete={() => { if (driverRegion !== null) setDriverRegion(null); }}
             >
-                {rides.map((ride) => (
+                {visibleRides.map((ride) => (
                     <Marker
                         key={ride._id}
-                        coordinate={{
-                            latitude: ride.pickupLocation.latitude,
-                            longitude: ride.pickupLocation.longitude,
-                        }}
-                        onPress={() => handleMakeOffer(ride)}
+                        coordinate={{ latitude: ride.pickupLocation.latitude, longitude: ride.pickupLocation.longitude }}
+                        onPress={() => activeTab === 'now' ? handleMakeOffer(ride) : handleAcceptScheduled(ride)}
                         tracksViewChanges={false}
                     >
                         <View style={styles.markerCallout}>
-                            <Text style={styles.markerFare}>
-                                {formatFare(ride.estimatedFare)}
-                            </Text>
+                            <Text style={styles.markerFare}>{formatFare(ride.estimatedFare)}</Text>
                             <Text style={styles.markerAddress} numberOfLines={1}>
                                 {ride.pickupLocation.address.split(',')[0]}
                             </Text>
@@ -667,46 +683,94 @@ export default function Home() {
 
             {/* Header overlay */}
             <View style={styles.headerOverlay}>
-                <TouchableOpacity
-                    style={styles.menuButton}
-                    onPress={() => (drawerNav as any).openDrawer()}
-                >
+                <TouchableOpacity style={styles.menuButton} onPress={() => (drawerNav as any).openDrawer()}>
                     <Ionicons name="menu" size={22} color={Colors.light.text} />
                 </TouchableOpacity>
-
                 <TouchableOpacity style={styles.recenterButton} onPress={handleRecenter}>
                     <Ionicons name="locate" size={20} color={Colors.light.primary} />
                 </TouchableOpacity>
             </View>
 
-            {/* Bottom sheet with ride list */}
+            {/* Bottom sheet */}
             <DraggableBottomSheet
                 ref={sheetRef}
                 snapPoints={[0.48, 0.72, 0.92]}
                 initialSnap={0}
                 backgroundColor={Colors.light.background}
             >
-                <View style={styles.sheetHeader}>
-                    <Text style={styles.sheetTitle}>Available Rides</Text>
-                    <View style={styles.sheetCountBadge}>
-                        <Text style={styles.sheetCountText}>{rides.length} nearby</Text>
-                    </View>
+                {/* ── Tab bar ── */}
+                <View style={styles.tabBar}>
+                    <TouchableOpacity
+                        style={[styles.tabItem, activeTab === 'now' && styles.tabItemActive]}
+                        onPress={() => setActiveTab('now')}
+                        activeOpacity={0.8}
+                    >
+                        <Ionicons
+                            name="flash"
+                            size={15}
+                            color={activeTab === 'now' ? Colors.light.primary : Colors.light.secondaryText}
+                        />
+                        <Text style={[styles.tabLabel, activeTab === 'now' && styles.tabLabelActive]}>
+                            Ride Now
+                        </Text>
+                        {nowRides.length > 0 && (
+                            <View style={styles.tabBadge}>
+                                <Text style={styles.tabBadgeText}>{nowRides.length}</Text>
+                            </View>
+                        )}
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                        style={[styles.tabItem, activeTab === 'scheduled' && styles.tabItemActive]}
+                        onPress={() => setActiveTab('scheduled')}
+                        activeOpacity={0.8}
+                    >
+                        <Ionicons
+                            name="calendar-outline"
+                            size={15}
+                            color={activeTab === 'scheduled' ? Colors.light.primary : Colors.light.secondaryText}
+                        />
+                        <Text style={[styles.tabLabel, activeTab === 'scheduled' && styles.tabLabelActive]}>
+                            Scheduled
+                        </Text>
+                        {scheduledRides.length > 0 && (
+                            <View style={styles.tabBadge}>
+                                <Text style={styles.tabBadgeText}>{scheduledRides.length}</Text>
+                            </View>
+                        )}
+                    </TouchableOpacity>
                 </View>
 
-                <FlatList
-                    data={rides}
-                    keyExtractor={(item) => item._id}
-                    renderItem={renderRideCard}
-                    contentContainerStyle={styles.rideList}
-                    ListEmptyComponent={renderEmpty}
-                    refreshing={isLoadingRides}
-                    onRefresh={fetchRides}
-                    showsVerticalScrollIndicator={false}
-                    scrollEventThrottle={16}
-                />
+                {/* ── Ride Now list ── */}
+                {activeTab === 'now' && (
+                    <FlatList
+                        data={nowRides}
+                        keyExtractor={(item) => item._id}
+                        renderItem={renderNowCard}
+                        contentContainerStyle={styles.rideList}
+                        ListEmptyComponent={() => renderEmpty(isLoadingNow, false)}
+                        refreshing={isLoadingNow}
+                        onRefresh={fetchNowRides}
+                        showsVerticalScrollIndicator={false}
+                    />
+                )}
+
+                {/* ── Scheduled list ── */}
+                {activeTab === 'scheduled' && (
+                    <FlatList
+                        data={scheduledRides}
+                        keyExtractor={(item) => item._id}
+                        renderItem={renderScheduledCard}
+                        contentContainerStyle={styles.rideList}
+                        ListEmptyComponent={() => renderEmpty(isLoadingScheduled, true)}
+                        refreshing={isLoadingScheduled}
+                        onRefresh={fetchScheduledRides}
+                        showsVerticalScrollIndicator={false}
+                    />
+                )}
             </DraggableBottomSheet>
 
-            {/* Offer modal */}
+            {/* Offer modal (driver_now only) */}
             <OfferModal
                 visible={offerModalVisible}
                 booking={selectedRide}

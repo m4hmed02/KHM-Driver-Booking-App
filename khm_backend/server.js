@@ -57,6 +57,22 @@ io.on('connection', (socket) => {
     }
   });
 
+  // ── In-ride Chat ─────────────────────────────────────────────────────────────
+  // Either party emits: { bookingId, recipientId, senderId, senderName, text, timestamp }
+  // We forward the full payload to the recipient.
+  socket.on('chat_message', (data) => {
+    try {
+      const { recipientId, ...rest } = data;
+      if (!recipientId) return;
+      const recipientSocketId = connectedUsers.get(recipientId.toString());
+      if (recipientSocketId) {
+        io.to(recipientSocketId).emit('chat_message', rest);
+      }
+    } catch (err) {
+      console.error('[Socket] chat_message error:', err.message);
+    }
+  });
+
   socket.on('disconnect', () => {
     for (const [userId, socketId] of connectedUsers.entries()) {
       if (socketId === socket.id) {

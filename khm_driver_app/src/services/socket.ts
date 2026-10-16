@@ -50,6 +50,14 @@ export interface CustomerComingPayload {
     bookingId: string;
 }
 
+export interface ChatMessagePayload {
+    bookingId: string;
+    senderId: string;
+    senderName: string;
+    text: string;
+    timestamp: number;
+}
+
 // Typed server-to-client events
 export interface ServerToClientEvents {
     // A new ride request has been placed by a customer (all known aliases)
@@ -72,6 +80,8 @@ export interface ServerToClientEvents {
     booking_request_deleted: (payload: BookingDeletedPayload) => void;
     // Customer is on their way to the pickup (sent after driver marks "arrived")
     customer_coming: (payload: CustomerComingPayload) => void;
+    // In-ride chat message forwarded by the server
+    chat_message: (payload: ChatMessagePayload) => void;
 }
 
 // ─── Singleton management ────────────────────────────────────────────────────
@@ -136,6 +146,27 @@ export const emitDriverLocation = (
 ): void => {
     if (!socket?.connected) return;
     socket.emit('driver_location_update' as any, { bookingId, customerId, latitude, longitude });
+};
+
+/**
+ * Send a chat message to the other party via the server relay.
+ */
+export const emitChatMessage = (
+    bookingId: string,
+    recipientId: string,
+    senderId: string,
+    senderName: string,
+    text: string,
+): void => {
+    if (!socket?.connected) return;
+    socket.emit('chat_message' as any, {
+        bookingId,
+        recipientId,
+        senderId,
+        senderName,
+        text,
+        timestamp: Date.now(),
+    });
 };
 
 /**

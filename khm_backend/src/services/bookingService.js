@@ -1,10 +1,13 @@
 const Booking = require('../models/Booking');
 
 exports.createBooking = async (customerId, bookingData) => {
+  const isScheduled = bookingData.bookingType === 'schedule_driver';
   const booking = await Booking.create({
     customer: customerId,
     ...bookingData,
-    expiresAt: new Date(Date.now() + 120_000),
+    // Scheduled rides must NOT expire — they sit in 'requesting' until a driver
+    // accepts them or the customer cancels. Only driver_now rides get the 2-min TTL.
+    expiresAt: isScheduled ? null : new Date(Date.now() + 120_000),
     status: 'requesting',
   });
   return booking;
@@ -33,10 +36,49 @@ exports.deleteBooking = async (bookingId, customerId) => {
   throw error;
 };
 
+// Only immediate (driver_now) bookings go into the live feed.
 exports.getAvailableBookings = async () => {
-  return await Booking.find({ status: 'requesting' })
+  return await Booking.find({ status: 'requesting', bookingType: 'driver_now' })
     .populate('customer', 'name phone avatar')
     .sort({ createdAt: -1 });
+};
+
+// Scheduled bookings — shown in the driver's separate "Scheduled" tab.
+// Returns all future scheduled rides still waiting for a driver.
+exports.getScheduledBookings = async () => {
+  return await Booking.find({ status: 'requesting', bookingType: 'schedule_driver' })
+    .populate('customer', 'name phone avatar')
+    .sort({ scheduledTime: 1 }); // soonest first
+};
+
+// Driver directly accepts a scheduled ride (no bidding — first come first served).
+exports.acceptScheduledBooking = async (bookingId, driverId) => {
+  const booking = await Booking.findById(bookingId);
+
+  if (!booking) {
+    const error = new Error('Booking not found');
+    error.statusCode = 404;
+    throw error;
+  }
+  if (booking.bookingType !== 'schedule_driver') {
+    const error = new Error('This booking is not a scheduled ride');
+    error.statusCode = 400;
+    throw error;
+  }
+  if (booking.status !== 'requesting') {
+    const error = new Error('This ride has already been accepted');
+    error.statusCode = 409;
+    throw error;
+  }
+
+  booking.driver = driverId;
+  booking.status = 'accepted';
+  booking.expiresAt = null;
+  await booking.save();
+
+  return await Booking.findById(bookingId)
+    .populate('driver', 'name phone avatar')
+    .populate('customer', 'name phone avatar');
 };
 
 exports.makeDriverOffer = async (bookingId, driverId, fare) => {
@@ -110,6 +152,12 @@ exports.getBookingStatus = async (bookingId) => {
     throw error;
   }
   return booking;
+};
+
+exports.getMyBookings = async (customerId) => {
+  return await Booking.find({ customer: customerId })
+    .populate('driver', 'name phone avatar')
+    .sort({ createdAt: -1 });
 };
 
 exports.updateBookingStatus = async (bookingId, status) => {

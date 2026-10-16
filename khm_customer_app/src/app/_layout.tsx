@@ -45,6 +45,8 @@ export default function TabLayout() {
             <Drawer.Screen name='fare_estimate' />
             <Drawer.Screen name='driver_assigned' />
             <Drawer.Screen name='trip_completed' />
+            <Drawer.Screen name='available_requests' />
+            <Drawer.Screen name='scheduled_rides' />
           </Drawer>
         </SafeAreaView>
       </AuthProvider>

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { View, Text, TouchableOpacity, Platform, ScrollView, StyleSheet, Dimensions, ActivityIndicator, Linking, AppState, Alert, Animated, Image } from 'react-native';
+import { View, Text, TouchableOpacity, Platform, ScrollView, StyleSheet, Dimensions, ActivityIndicator, Linking, AppState, Alert, Animated, Image, Modal, TextInput, KeyboardAvoidingView } from 'react-native';
 import { MaterialCommunityIcons, Ionicons } from '@expo/vector-icons';
 import MapView, { Marker, Polyline } from 'react-native-maps';
 import DateTimePicker from '@react-native-community/datetimepicker';
@@ -18,7 +18,9 @@ import { CalculateFareResponse } from '../services/apis/fares/type';
 import { createBookingApi, deleteBookingApi, getBookingStatusApi, acceptDriverOfferApi, rejectDriverOfferApi } from '../services/apis/booking/bookingService';
 import { Booking, Offer } from '../services/apis/booking/type';
 import { connectSocket, emitCustomerComing } from '../services/socket';
+import ChatModal from '../components/ChatModal';
 import { useAuth } from '../context/AuthContext';
+import { DRIVER_MARKER_BASE64 } from '../constants/driverMarkerAsset';
 
 const getAvatarUrl = (path?: string | null) => {
     if (!path) return 'https://ui-avatars.com/api/?name=Driver&background=random';
@@ -61,7 +63,7 @@ export default function Home() {
     
     const [focusedInput, setFocusedInput] = useState<'pickup' | 'dropoff' | null>(null);
 
-    const { fetchRoute, routeCoordinates, distance, duration, isLoading: isRouteLoading } = useRoute();
+    const { fetchRoute, routeCoordinates, distance, duration, isLoading: isRouteLoading, clearRoute } = useRoute();
 
     const [fareResult, setFareResult] = useState<CalculateFareResponse | null>(null);
     const [isFareLoading, setIsFareLoading] = useState(false);
@@ -79,6 +81,11 @@ export default function Home() {
     const [isOfferLoading, setIsOfferLoading] = useState(false);
     const [offerSecondsLeft, setOfferSecondsLeft] = useState(30);
     const [driverArriving, setDriverArriving] = useState(false);
+    // ── Cancellation with reason ──────────────────────────────────────────────
+    const [showCancelModal, setShowCancelModal] = useState(false);
+    const [cancelReason, setCancelReason] = useState('');
+    const [cancelCustomText, setCancelCustomText] = useState('');
+    const [isCancelling, setIsCancelling] = useState(false);
     // Animated driver marker — position glides smoothly between socket updates.
     // animatedDriverCoord replaces the old plain driverLocation state.
     const {
@@ -89,7 +96,9 @@ export default function Home() {
     } = useRoadSnappedMarker({ duration: 4500 });
     const [acceptedDriver, setAcceptedDriver] = useState<any | null>(null);
     const [acceptedDriverId, setAcceptedDriverId] = useState<string | null>(null);
+    const [showChat, setShowChat] = useState(false);
     const [driverArrived, setDriverArrived] = useState(false);
+    const [isCustomerComing, setIsCustomerComing] = useState(false);
     const [tripInProgress, setTripInProgress] = useState(false);
     const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
     const offerDropAnim = useRef(new Animated.Value(-220)).current;
@@ -117,6 +126,9 @@ export default function Home() {
     const tripInProgressRef   = useRef<boolean>(false);
     const pickupCoordinateRef  = useRef<{latitude: number; longitude: number} | null>(null);
     const dropoffCoordinateRef = useRef<{latitude: number; longitude: number} | null>(null);
+    // Tracks whether the driver marker has been seeded with an initial position.
+    // Using a ref (not state) so it is always live inside the stable socket closure.
+    const driverMarkerSeededRef = useRef<boolean>(false);
 
     // Keep refs in sync with state on every render
     useEffect(() => { acceptedDriverIdRef.current  = acceptedDriverId;  }, [acceptedDriverId]);
@@ -153,10 +165,17 @@ export default function Home() {
         setAcceptedDriverId(null);
         setDriverArriving(false);
         setDriverArrived(false);
+        setIsCustomerComing(false);
         setTripInProgress(false);
-        // animatedDriverCoord is hidden by the driverArriving/tripInProgress guard,
-        // so no explicit reset needed — the hook will be re-seeded on the next ride.
-    }, []);
+        // Reset driver marker seed flag so the next booking gets a fresh initial fix
+        driverMarkerSeededRef.current = false;
+        // Clear locations so the user must re-enter them for the next ride
+        setPickup('');
+        setDropoff('');
+        setPickupCoordinate(null);
+        setDropoffCoordinate(null);
+        clearRoute();
+    }, [clearRoute]);
 
     // Spin animation for the location-loading marker icon
     useEffect(() => {
@@ -303,6 +322,17 @@ export default function Home() {
             setFareResult(null);
             setFareError(null);
             setFareAdjustment(0);
+        } else if (!pickupCoordinate && !dropoffCoordinate && initialRegion && mapRef.current) {
+            // Both locations cleared — animate back to user's position
+            const bottomSheetFraction = 0.52;
+            const latOffset = (initialRegion.latitudeDelta / 2) * ((SCREEN_HEIGHT * (1 - bottomSheetFraction)) / SCREEN_HEIGHT) * 0.5;
+            mapRef.current.animateCamera({
+                center: {
+                    latitude: initialRegion.latitude - latOffset,
+                    longitude: initialRegion.longitude,
+                },
+                zoom: 14,
+            }, { duration: 600 });
         }
     }, [pickupCoordinate, dropoffCoordinate, fetchRoute]);
 
@@ -403,9 +433,15 @@ export default function Home() {
         const handleDriverLocation = (payload: { bookingId: string; latitude: number; longitude: number }) => {
             if (payload.bookingId !== activeBooking._id) return;
 
-            // First update — seed without animation so marker appears immediately
-            if (!animatedDriverCoord) {
+            // First update — seed without animation so marker appears immediately.
+            // Use a ref (not animatedDriverCoord state) to check: the socket handler
+            // is created once and animatedDriverCoord is always null inside the closure.
+            if (!driverMarkerSeededRef.current) {
+                driverMarkerSeededRef.current = true;
                 setDriverMarkerInitial(payload.latitude, payload.longitude);
+                // Briefly enable tracksViewChanges so the custom bitmap is captured
+                setTrackMarker(true);
+                setTimeout(() => setTrackMarker(false), 600);
             } else {
                 updateDriverMarker(payload.latitude, payload.longitude);
             }
@@ -440,9 +476,28 @@ export default function Home() {
             const newStatus = payload.status;
             if (!newStatus) return;
 
+            // For scheduled rides, 'accepted' means a driver has committed to the future
+            // booking. Clear the home panel and redirect to the scheduled rides screen.
+            if (newStatus === 'accepted' && activeBooking.bookingType === 'schedule_driver') {
+                clearBookingState(activeBooking._id);
+                Alert.alert(
+                    'Driver Assigned! 🎉',
+                    'A driver has accepted your scheduled ride. You can view it in Scheduled Rides.',
+                    [
+                        {
+                            text: 'View Scheduled Rides',
+                            onPress: () => router.push('/scheduled_rides'),
+                        },
+                        { text: 'OK', style: 'cancel' },
+                    ],
+                );
+                return;
+            }
+
             if (newStatus === 'arriving') {
                 // Driver arrived at pickup — always set driverArrived regardless of other state
                 setDriverArrived(true);
+                setIsCustomerComing(false);
                 setActiveBooking((prev: any) => prev ? { ...prev, status: 'arriving' } : prev);
 
                 // Extract driver info from the booking payload — the backend always
@@ -483,6 +538,7 @@ export default function Home() {
                 setTripInProgress(true);
                 tripInProgressRef.current = true;
                 setDriverArrived(false);
+                setIsCustomerComing(false);
                 setActiveBooking((prev: any) => prev ? { ...prev, status: 'started' } : prev);
                 const dropoff = dropoffCoordinateRef.current;
                 const pickup  = pickupCoordinateRef.current;
@@ -573,9 +629,36 @@ export default function Home() {
         }
     };
 
+    // Opens the reason modal — used for cancelling after a driver is assigned
+    const openCancelModal = () => {
+        setCancelReason('');
+        setCancelCustomText('');
+        setShowCancelModal(true);
+    };
+
+    const handleCancelWithReason = async () => {
+        const reason = cancelReason === 'Other' ? cancelCustomText.trim() : cancelReason;
+        if (!reason) {
+            Alert.alert('Please select a reason', 'Choose a reason or enter your own before cancelling.');
+            return;
+        }
+        if (!activeBooking) return;
+        setIsCancelling(true);
+        try {
+            await deleteBookingApi(activeBooking._id);
+            setShowCancelModal(false);
+            clearBookingState(activeBooking._id);
+        } catch (err) {
+            Alert.alert('Could not cancel', err instanceof Error ? err.message : 'Please try again.');
+        } finally {
+            setIsCancelling(false);
+        }
+    };
+
     // Delete requests that remain unanswered after two minutes.
+    // Only applies to driver_now bookings — scheduled rides wait indefinitely.
     useEffect(() => {
-        if (activeBooking?.status === 'requesting') {
+        if (activeBooking?.status === 'requesting' && activeBooking?.bookingType !== 'schedule_driver') {
             setSearchTimedOut(false);
             setSearchSecondsLeft(120);
             searchProgress.setValue(1);
@@ -663,9 +746,10 @@ export default function Home() {
         }
     }, [pendingOffer]);
 
-    // Poll booking status every 4 s to catch incoming driver offers
+    // Poll booking status every 4 s to catch incoming driver offers.
+    // Scheduled bookings use direct-accept (no bidding), so polling is skipped for them.
     useEffect(() => {
-        if (!activeBooking) {
+        if (!activeBooking || activeBooking.bookingType === 'schedule_driver') {
             if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
             setPendingOffer(null);
             return;
@@ -967,7 +1051,7 @@ export default function Home() {
                         <Marker
                             coordinate={animatedDriverCoord}
                             anchor={{ x: 0.5, y: 0.5 }}
-                            tracksViewChanges={true}
+                            tracksViewChanges={trackMarker}
                             zIndex={999}
                         >
                             <Animated.View
@@ -983,12 +1067,27 @@ export default function Home() {
                             >
                                 <View style={{
                                     backgroundColor: '#FFFFFF',
-                                    width: 36, height: 36, borderRadius: 18,
-                                    elevation: 5, shadowColor: '#000', shadowOpacity: 0.25, shadowRadius: 5, shadowOffset: { width: 0, height: 2 },
+                                    width: 46, height: 46, borderRadius: 23,
+                                    elevation: 6, shadowColor: '#000', shadowOpacity: 0.28, shadowRadius: 4.5, shadowOffset: { width: 0, height: 2 },
                                     justifyContent: 'center', alignItems: 'center',
-                                    borderWidth: 2, borderColor: theme.primary,
+                                    borderWidth: 2, borderColor: '#7ED957',
                                 }}>
-                                    <Ionicons name="navigate" size={20} color={theme.primaryDark} />
+                                    {/* Direction pointer notch */}
+                                    <View style={{
+                                        position: 'absolute',
+                                        top: 2,
+                                        width: 0, height: 0,
+                                        backgroundColor: 'transparent',
+                                        borderStyle: 'solid',
+                                        borderLeftWidth: 4, borderRightWidth: 4, borderBottomWidth: 5,
+                                        borderLeftColor: 'transparent', borderRightColor: 'transparent',
+                                        borderBottomColor: '#7ED957',
+                                    }} />
+                                    <Image
+                                        source={{ uri: DRIVER_MARKER_BASE64 }}
+                                        style={{ width: 36, height: 36 }}
+                                        resizeMode="contain"
+                                    />
                                 </View>
                             </Animated.View>
                         </Marker>
@@ -1248,7 +1347,9 @@ export default function Home() {
                             ) : (
                                 <Text style={[styles.confirmButtonText, isButtonDisabled && styles.confirmButtonTextDisabled]}>
                                     {fareResult && !isButtonDisabled
-                                        ? `Request Ride — AED ${Math.max(0, fareResult.recommendedFare + fareAdjustment).toFixed(2)}`
+                                        ? scheduleType === 'schedule'
+                                            ? `Schedule Ride — AED ${Math.max(0, fareResult.recommendedFare + fareAdjustment).toFixed(2)}`
+                                            : `Request Ride — AED ${Math.max(0, fareResult.recommendedFare + fareAdjustment).toFixed(2)}`
                                         : `Confirm ${scheduleType === 'schedule' ? 'Schedule' : 'Locations'}`}
                                 </Text>
                             )}
@@ -1256,8 +1357,8 @@ export default function Home() {
                     </View>
                 )}
 
-                {/* Searching for driver panel — shown after successful booking */}
-                {activeBooking && !driverArriving && (
+                {/* Searching for driver panel — driver_now only */}
+                {activeBooking && !driverArriving && activeBooking.bookingType !== 'schedule_driver' && (
                     <View style={{
                         position: 'absolute',
                         bottom: 0,
@@ -1436,6 +1537,143 @@ export default function Home() {
                     </View>
                 )}
 
+                {/* Scheduled ride confirmation panel */}
+                {activeBooking && !driverArriving && activeBooking.bookingType === 'schedule_driver' && (
+                    <View style={{
+                        position: 'absolute',
+                        bottom: 0,
+                        left: 0,
+                        right: 0,
+                        backgroundColor: Colors.light.background,
+                        borderTopLeftRadius: 24,
+                        borderTopRightRadius: 24,
+                        paddingHorizontal: 20,
+                        paddingTop: 20,
+                        paddingBottom: 36,
+                        zIndex: 300,
+                        shadowColor: '#000',
+                        shadowOffset: { width: 0, height: -3 },
+                        shadowOpacity: 0.1,
+                        shadowRadius: 10,
+                        elevation: 12,
+                    }}>
+                        {/* Header */}
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 16 }}>
+                            <View style={{
+                                width: 40, height: 40, borderRadius: 20,
+                                backgroundColor: Colors.light.success,
+                                justifyContent: 'center', alignItems: 'center',
+                            }}>
+                                <Ionicons name="calendar-outline" size={22} color={Colors.light.primaryDark} />
+                            </View>
+                            <View style={{ flex: 1 }}>
+                                <Text style={{ fontSize: 16, fontWeight: '800', color: Colors.light.text }}>
+                                    Ride Scheduled!
+                                </Text>
+                                <Text style={{ fontSize: 13, color: Colors.light.secondaryText, marginTop: 2 }}>
+                                    You'll be notified when a driver accepts
+                                </Text>
+                            </View>
+                        </View>
+
+                        {/* Scheduled time badge */}
+                        {activeBooking.scheduledTime && (
+                            <View style={{
+                                flexDirection: 'row',
+                                alignItems: 'center',
+                                gap: 8,
+                                backgroundColor: Colors.light.success,
+                                borderRadius: 10,
+                                paddingHorizontal: 14,
+                                paddingVertical: 10,
+                                marginBottom: 16,
+                            }}>
+                                <Ionicons name="time-outline" size={18} color={Colors.light.primaryDark} />
+                                <Text style={{ fontSize: 14, fontWeight: '600', color: Colors.light.primaryDark }}>
+                                    {new Date(activeBooking.scheduledTime).toLocaleString(undefined, {
+                                        weekday: 'short', month: 'short', day: 'numeric',
+                                        hour: '2-digit', minute: '2-digit',
+                                    })}
+                                </Text>
+                            </View>
+                        )}
+
+                        {/* Route summary */}
+                        <View style={{
+                            borderRadius: 12,
+                            borderWidth: 1,
+                            borderColor: Colors.light.border,
+                            overflow: 'hidden',
+                            marginBottom: 16,
+                        }}>
+                            <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: 14, paddingVertical: 12, gap: 12 }}>
+                                <View style={{ width: 10, height: 10, borderRadius: 5, backgroundColor: Colors.light.primary }} />
+                                <Text style={{ flex: 1, fontSize: 13, color: Colors.light.text, fontWeight: '500' }} numberOfLines={1}>
+                                    {activeBooking.pickupLocation.address}
+                                </Text>
+                            </View>
+                            <View style={{ height: StyleSheet.hairlineWidth, backgroundColor: Colors.light.border, marginLeft: 36 }} />
+                            <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: 14, paddingVertical: 12, gap: 12 }}>
+                                <MaterialCommunityIcons name="flag-checkered" size={14} color={Colors.light.text} />
+                                <Text style={{ flex: 1, fontSize: 13, color: Colors.light.text, fontWeight: '500' }} numberOfLines={1}>
+                                    {activeBooking.dropoffLocation.address}
+                                </Text>
+                            </View>
+                        </View>
+
+                        {/* Fare */}
+                        <View style={{
+                            flexDirection: 'row',
+                            justifyContent: 'space-between',
+                            alignItems: 'center',
+                            paddingHorizontal: 14,
+                            paddingVertical: 12,
+                            borderRadius: 12,
+                            borderWidth: 1,
+                            borderColor: Colors.light.border,
+                            marginBottom: 16,
+                        }}>
+                            <Text style={{ fontSize: 14, color: Colors.light.secondaryText }}>Offered fare</Text>
+                            <Text style={{ fontSize: 20, fontWeight: '800', color: Colors.light.primary }}>
+                                AED {activeBooking.estimatedFare.toFixed(2)}
+                            </Text>
+                        </View>
+
+                        {/* Cancel */}
+                        <TouchableOpacity
+                            onPress={handleCancelRide}
+                            activeOpacity={0.8}
+                            style={{
+                                height: 48, borderRadius: 12,
+                                borderWidth: 1.5, borderColor: Colors.light.red,
+                                justifyContent: 'center', alignItems: 'center',
+                            }}
+                        >
+                            <Text style={{ fontSize: 15, fontWeight: '600', color: Colors.light.red }}>Cancel Schedule</Text>
+                        </TouchableOpacity>
+
+                        {/* Quick link to scheduled rides */}
+                        <TouchableOpacity
+                            onPress={() => {
+                                clearBookingState(activeBooking._id);
+                                router.push('/scheduled_rides');
+                            }}
+                            activeOpacity={0.8}
+                            style={{
+                                height: 48, borderRadius: 12,
+                                backgroundColor: Colors.light.primary,
+                                justifyContent: 'center', alignItems: 'center',
+                                marginTop: 10,
+                                flexDirection: 'row',
+                                gap: 8,
+                            }}
+                        >
+                            <Ionicons name="calendar-outline" size={18} color="#fff" />
+                            <Text style={{ fontSize: 15, fontWeight: '600', color: '#fff' }}>View Scheduled Rides</Text>
+                        </TouchableOpacity>
+                    </View>
+                )}
+
                 {/* Driver on the way panel */}
                 {activeBooking && (driverArriving || tripInProgress) && (acceptedDriver || activeBooking.driver) && (
                     <View style={{
@@ -1501,13 +1739,43 @@ export default function Home() {
                                         </Text>
                                     </View>
                                 </View>
-                                <View style={{ alignItems: 'flex-end' }}>
-                                    <Text style={{ fontSize: 14, fontWeight: '700', color: Colors.light.text }}>
-                                        Toyota Camry
-                                    </Text>
-                                    <Text style={{ fontSize: 13, color: Colors.light.secondaryText, marginTop: 2, fontWeight: '600' }}>
-                                        DXB 1234
-                                    </Text>
+                                {/* Call + Chat buttons replacing car info */}
+                                <View style={{ flexDirection: 'row', gap: 10 }}>
+                                    {/* Call */}
+                                    <TouchableOpacity
+                                        onPress={() => {
+                                            const phone = (driver.phone as string | undefined)?.replace(/\s+/g, '');
+                                            if (!phone) {
+                                                Alert.alert('No phone number', 'Driver phone number is not available.');
+                                                return;
+                                            }
+                                            Linking.openURL(`tel:${phone}`);
+                                        }}
+                                        activeOpacity={0.8}
+                                        style={{
+                                            width: 42, height: 42, borderRadius: 21,
+                                            backgroundColor: '#22C55E',
+                                            alignItems: 'center', justifyContent: 'center',
+                                            shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
+                                            shadowOpacity: 0.15, shadowRadius: 4, elevation: 3,
+                                        }}
+                                    >
+                                        <Ionicons name="call" size={20} color="#fff" />
+                                    </TouchableOpacity>
+                                    {/* Chat */}
+                                    <TouchableOpacity
+                                        onPress={() => setShowChat(true)}
+                                        activeOpacity={0.8}
+                                        style={{
+                                            width: 42, height: 42, borderRadius: 21,
+                                            backgroundColor: Colors.light.primary,
+                                            alignItems: 'center', justifyContent: 'center',
+                                            shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
+                                            shadowOpacity: 0.15, shadowRadius: 4, elevation: 3,
+                                        }}
+                                    >
+                                        <Ionicons name="chatbubble-ellipses" size={20} color="#fff" />
+                                    </TouchableOpacity>
                                 </View>
                             </View>
                             );
@@ -1551,23 +1819,41 @@ export default function Home() {
                             <TouchableOpacity
                                 onPress={() => {
                                     emitCustomerComing(activeBooking._id, dId);
-                                    Alert.alert('On My Way!', 'The driver has been notified that you\'re coming.');
+                                    Alert.alert(
+                                        'On My Way!',
+                                        'The driver has been notified that you\'re coming.',
+                                        [
+                                            {
+                                                text: 'OK',
+                                                onPress: () => {
+                                                    setIsCustomerComing(true);
+                                                },
+                                            },
+                                        ],
+                                        { cancelable: false }
+                                    );
                                 }}
-                                activeOpacity={0.85}
+                                disabled={isCustomerComing}
+                                activeOpacity={isCustomerComing ? 1 : 0.85}
                                 style={{
                                     marginTop: 12,
                                     height: 52,
                                     borderRadius: 14,
-                                    backgroundColor: Colors.light.primary,
+                                    backgroundColor: isCustomerComing ? '#9CA3AF' : Colors.light.primary,
                                     justifyContent: 'center',
                                     alignItems: 'center',
                                     flexDirection: 'row',
                                     gap: 8,
+                                    opacity: isCustomerComing ? 0.8 : 1,
                                 }}
                             >
-                                <Ionicons name="walk" size={20} color="#fff" />
+                                <Ionicons
+                                    name={isCustomerComing ? "checkmark-circle" : "walk"}
+                                    size={20}
+                                    color="#fff"
+                                />
                                 <Text style={{ fontSize: 15, fontWeight: '700', color: '#FFFFFF' }}>
-                                    I'm Coming
+                                    {isCustomerComing ? "Driver Notified" : "I'm Coming"}
                                 </Text>
                             </TouchableOpacity>
                             );
@@ -1595,8 +1881,222 @@ export default function Home() {
                                 </View>
                             </View>
                         )}
+
+                        {/* Cancel button — only allowed before driver marks arrived */}
+                        {!driverArrived && !tripInProgress && (
+                            <TouchableOpacity
+                                onPress={openCancelModal}
+                                activeOpacity={0.8}
+                                style={{
+                                    marginTop: 14,
+                                    height: 46,
+                                    borderRadius: 12,
+                                    borderWidth: 1.5,
+                                    borderColor: Colors.light.red,
+                                    justifyContent: 'center',
+                                    alignItems: 'center',
+                                    flexDirection: 'row',
+                                    gap: 6,
+                                }}
+                            >
+                                <Ionicons name="close-circle-outline" size={18} color={Colors.light.red} />
+                                <Text style={{ fontSize: 14, fontWeight: '600', color: Colors.light.red }}>
+                                    Cancel Ride
+                                </Text>
+                            </TouchableOpacity>
+                        )}
                     </View>
                 )}
+
+                {/* ── In-ride Chat Modal ───────────────────────────────────── */}
+                {activeBooking && (() => {
+                    const driver = acceptedDriver ||
+                        (typeof activeBooking.driver === 'object' ? activeBooking.driver as any : null);
+                    const driverId = acceptedDriverId ||
+                        (activeBooking.driver
+                            ? (typeof activeBooking.driver === 'object'
+                                ? (activeBooking.driver as any)._id
+                                : activeBooking.driver as string)
+                            : null);
+                    if (!driver || !driverId) return null;
+                    return (
+                        <ChatModal
+                            visible={showChat}
+                            onClose={() => setShowChat(false)}
+                            bookingId={activeBooking._id}
+                            myId={user?._id ?? ''}
+                            myName={user?.name ?? 'Customer'}
+                            recipientId={driverId}
+                            recipientName={driver.name ?? 'Driver'}
+                        />
+                    );
+                })()}
+
+                {/* ── Cancel Reason Modal ─────────────────────────────────── */}
+                <Modal
+                    visible={showCancelModal}
+                    transparent
+                    animationType="slide"
+                    onRequestClose={() => setShowCancelModal(false)}
+                >
+                    <KeyboardAvoidingView
+                        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+                        style={{ flex: 1 }}
+                    >
+                        <TouchableOpacity
+                            style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.45)' }}
+                            activeOpacity={1}
+                            onPress={() => !isCancelling && setShowCancelModal(false)}
+                        >
+                            <TouchableOpacity
+                                activeOpacity={1}
+                                style={{
+                                    position: 'absolute',
+                                    bottom: 0,
+                                    left: 0,
+                                    right: 0,
+                                    backgroundColor: Colors.light.background,
+                                    borderTopLeftRadius: 24,
+                                    borderTopRightRadius: 24,
+                                    paddingHorizontal: 20,
+                                    paddingTop: 8,
+                                    paddingBottom: Platform.OS === 'ios' ? 40 : 28,
+                                }}
+                            >
+                                {/* Handle bar */}
+                                <View style={{
+                                    width: 40, height: 4, borderRadius: 2,
+                                    backgroundColor: Colors.light.border,
+                                    alignSelf: 'center',
+                                    marginBottom: 20,
+                                }} />
+
+                                <Text style={{ fontSize: 18, fontWeight: '800', color: Colors.light.text, marginBottom: 4 }}>
+                                    Cancel Ride
+                                </Text>
+                                <Text style={{ fontSize: 13, color: Colors.light.secondaryText, marginBottom: 20 }}>
+                                    Please let us know why you're cancelling.
+                                </Text>
+
+                                {/* Preset reasons */}
+                                {[
+                                    'Driver is taking too long',
+                                    'I made a wrong booking',
+                                    'Found another ride',
+                                    'Changed my plans',
+                                    'Emergency',
+                                    'Other',
+                                ].map((reason) => (
+                                    <TouchableOpacity
+                                        key={reason}
+                                        onPress={() => { setCancelReason(reason); setCancelCustomText(''); }}
+                                        activeOpacity={0.75}
+                                        style={{
+                                            flexDirection: 'row',
+                                            alignItems: 'center',
+                                            paddingVertical: 13,
+                                            paddingHorizontal: 4,
+                                            borderBottomWidth: StyleSheet.hairlineWidth,
+                                            borderBottomColor: Colors.light.border,
+                                            gap: 12,
+                                        }}
+                                    >
+                                        {/* Radio circle */}
+                                        <View style={{
+                                            width: 22, height: 22, borderRadius: 11,
+                                            borderWidth: 2,
+                                            borderColor: cancelReason === reason ? Colors.light.primary : Colors.light.border,
+                                            backgroundColor: cancelReason === reason ? Colors.light.primary : 'transparent',
+                                            alignItems: 'center', justifyContent: 'center',
+                                        }}>
+                                            {cancelReason === reason && (
+                                                <View style={{
+                                                    width: 8, height: 8, borderRadius: 4,
+                                                    backgroundColor: '#fff',
+                                                }} />
+                                            )}
+                                        </View>
+                                        <Text style={{
+                                            fontSize: 15,
+                                            color: cancelReason === reason ? Colors.light.text : Colors.light.secondaryText,
+                                            fontWeight: cancelReason === reason ? '600' : '400',
+                                            flex: 1,
+                                        }}>
+                                            {reason}
+                                        </Text>
+                                    </TouchableOpacity>
+                                ))}
+
+                                {/* Custom text input — shown only when "Other" is selected */}
+                                {cancelReason === 'Other' && (
+                                    <TextInput
+                                        value={cancelCustomText}
+                                        onChangeText={setCancelCustomText}
+                                        placeholder="Describe your reason…"
+                                        placeholderTextColor={Colors.light.secondaryText}
+                                        multiline
+                                        maxLength={200}
+                                        style={{
+                                            marginTop: 12,
+                                            borderWidth: 1.5,
+                                            borderColor: Colors.light.primary,
+                                            borderRadius: 12,
+                                            padding: 12,
+                                            fontSize: 14,
+                                            color: Colors.light.text,
+                                            minHeight: 80,
+                                            textAlignVertical: 'top',
+                                        }}
+                                    />
+                                )}
+
+                                {/* Action buttons */}
+                                <View style={{ flexDirection: 'row', gap: 12, marginTop: 20 }}>
+                                    <TouchableOpacity
+                                        onPress={() => setShowCancelModal(false)}
+                                        disabled={isCancelling}
+                                        activeOpacity={0.8}
+                                        style={{
+                                            flex: 1, height: 50, borderRadius: 12,
+                                            borderWidth: 1.5, borderColor: Colors.light.border,
+                                            justifyContent: 'center', alignItems: 'center',
+                                        }}
+                                    >
+                                        <Text style={{ fontSize: 15, fontWeight: '600', color: Colors.light.secondaryText }}>
+                                            Keep Ride
+                                        </Text>
+                                    </TouchableOpacity>
+
+                                    <TouchableOpacity
+                                        onPress={handleCancelWithReason}
+                                        disabled={isCancelling || !cancelReason || (cancelReason === 'Other' && !cancelCustomText.trim())}
+                                        activeOpacity={0.8}
+                                        style={{
+                                            flex: 1, height: 50, borderRadius: 12,
+                                            backgroundColor: (!cancelReason || (cancelReason === 'Other' && !cancelCustomText.trim()))
+                                                ? Colors.light.border
+                                                : Colors.light.red,
+                                            justifyContent: 'center', alignItems: 'center',
+                                        }}
+                                    >
+                                        {isCancelling ? (
+                                            <ActivityIndicator size="small" color="#fff" />
+                                        ) : (
+                                            <Text style={{
+                                                fontSize: 15, fontWeight: '700',
+                                                color: (!cancelReason || (cancelReason === 'Other' && !cancelCustomText.trim()))
+                                                    ? Colors.light.secondaryText
+                                                    : '#fff',
+                                            }}>
+                                                Cancel Ride
+                                            </Text>
+                                        )}
+                                    </TouchableOpacity>
+                                </View>
+                            </TouchableOpacity>
+                        </TouchableOpacity>
+                    </KeyboardAvoidingView>
+                </Modal>
             </View>
         </GestureHandlerRootView>
     );

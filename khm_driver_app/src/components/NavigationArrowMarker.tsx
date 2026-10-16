@@ -1,33 +1,29 @@
 import React from 'react';
 import { Animated, StyleSheet, View } from 'react-native';
-import { MaterialIcons } from '@expo/vector-icons';
+import { Image } from 'expo-image';
+import { DRIVER_MARKER_BASE64 } from '../constants/driverMarkerAsset';
 
 interface NavigationArrowMarkerProps {
     /**
      * Heading as an Animated.Value (degrees, 0 = North, increases clockwise).
-     * Pass the `animatedHeading` returned by `useAnimatedMarker`.
+     * Pass the `animatedHeading` returned by `useRoadSnappedMarker`.
      * A plain number is also accepted for static / initial renders.
      */
     heading?: Animated.Value | number;
     /**
-     * Outer circle diameter. Defaults to 44.
+     * Outer circle diameter. Defaults to 46.
      */
     size?: number;
     /**
-     * Icon size inside circle. Defaults to 28.
+     * Icon size inside circle. Defaults to 36.
      */
-    arrowSize?: number;
-    /**
-     * Color of the navigation arrow. Defaults to '#0066FF'.
-     */
-    arrowColor?: string;
+    iconSize?: number;
 }
 
 export const NavigationArrowMarker: React.FC<NavigationArrowMarkerProps> = ({
     heading = 0,
-    size = 44,
-    arrowSize = 28,
-    arrowColor = '#0066FF',
+    size = 46,
+    iconSize = 36,
 }) => {
     // Accept either a raw number (static) or an Animated.Value (live).
     // Animated.Value.interpolate returns a string like "45deg" directly.
@@ -48,27 +44,26 @@ export const NavigationArrowMarker: React.FC<NavigationArrowMarkerProps> = ({
 
     return (
         <View style={[styles.container, { width: size + 10, height: size + 10 }]}>
-            <View
-                style={[
-                    styles.circle,
-                    {
-                        width: size,
-                        height: size,
-                        borderRadius: size / 2,
-                    },
-                ]}
-            >
-                {/* Animated.View handles the rotation so it runs without React re-renders */}
-                <Animated.View
+            <Animated.View style={rotateStyle}>
+                <View
                     style={[
-                        styles.arrowWrapper,
-                        { width: arrowSize, height: arrowSize },
-                        rotateStyle,
+                        styles.circle,
+                        {
+                            width: size,
+                            height: size,
+                            borderRadius: size / 2,
+                        },
                     ]}
                 >
-                    <MaterialIcons name="navigation" size={arrowSize} color={arrowColor} />
-                </Animated.View>
-            </View>
+                    {/* Heading direction pointer notch */}
+                    <View style={styles.directionPointer} />
+                    <Image
+                        source={{ uri: DRIVER_MARKER_BASE64 }}
+                        style={{ width: iconSize, height: iconSize }}
+                        contentFit="contain"
+                    />
+                </View>
+            </Animated.View>
         </View>
     );
 };
@@ -89,11 +84,21 @@ const styles = StyleSheet.create({
         shadowOpacity: 0.28,
         shadowRadius: 4.5,
         elevation: 6,
-        borderWidth: 1.5,
-        borderColor: 'rgba(255, 255, 255, 0.95)',
+        borderWidth: 2,
+        borderColor: '#7ED957',
     },
-    arrowWrapper: {
-        alignItems: 'center',
-        justifyContent: 'center',
+    directionPointer: {
+        position: 'absolute',
+        top: 2,
+        width: 0,
+        height: 0,
+        backgroundColor: 'transparent',
+        borderStyle: 'solid',
+        borderLeftWidth: 4,
+        borderRightWidth: 4,
+        borderBottomWidth: 5,
+        borderLeftColor: 'transparent',
+        borderRightColor: 'transparent',
+        borderBottomColor: '#7ED957',
     },
 });

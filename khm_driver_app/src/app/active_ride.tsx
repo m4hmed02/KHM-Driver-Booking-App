@@ -22,6 +22,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import {
     ActivityIndicator,
     Alert,
+    Linking,
     StyleSheet,
     Text,
     TouchableOpacity,
@@ -31,6 +32,7 @@ import MapView, { Marker, Polyline, PROVIDER_GOOGLE, Region } from 'react-native
 import { Ionicons } from '@expo/vector-icons';
 
 import NavigationArrowMarker from '../components/NavigationArrowMarker';
+import ChatModal from '../components/ChatModal';
 import { Colors } from '../constants/theme';
 import { Coordinate, useRoute } from '../hooks/useRoute';
 import { useRoadSnappedMarker } from '../hooks/useRoadSnappedMarker';
@@ -260,7 +262,43 @@ const styles = StyleSheet.create({
         elevation: 5,
         zIndex: 10,
     },
+    contactRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        backgroundColor: Colors.light.background,
+        borderWidth: 1,
+        borderColor: Colors.light.border,
+        borderRadius: 14,
+        marginBottom: 14,
+        overflow: 'hidden',
+    },
+    contactBtn: {
+        flex: 1,
+        alignItems: 'center',
+        justifyContent: 'center',
+        paddingVertical: 12,
+        gap: 6,
+    },
+    contactIcon: {
+        width: 40,
+        height: 40,
+        borderRadius: 20,
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    contactLabel: {
+        fontSize: 12,
+        fontWeight: '700',
+        color: Colors.light.text,
+    },
+    contactDivider: {
+        width: 1,
+        height: 44,
+        backgroundColor: Colors.light.border,
+    },
 });
+
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -285,6 +323,7 @@ export default function ActiveRide() {
     const [isUpdating, setIsUpdating] = useState(false);
     const [customerComing, setCustomerComing] = useState(false);
     const [showCompleted, setShowCompleted] = useState(false);
+    const [showChat, setShowChat] = useState(false);
 
     // ── Smooth animated marker ────────────────────────────────────────────────
     // animatedCoord  — interpolated lat/lng updated every rAF frame
@@ -299,11 +338,18 @@ export default function ActiveRide() {
     const mapRef = useRef<MapView>(null);
     const locationSubRef = useRef<Location.LocationSubscription | null>(null);
     const locationEmitTimer = useRef<ReturnType<typeof setInterval> | null>(null);
-    // Holds the latest raw GPS fix — used only for the socket emit interval
-    // so we always broadcast the true position, not the interpolated one.
+    // Holds the latest raw GPS fix — used for socket emit and route fetching
     const latestCoordRef = useRef<Coordinate | null>(null);
+    // Holds the GPS position when the route was last fetched (for 100m throttle)
+    const lastRouteCoordRef = useRef<Coordinate | null>(null);
+    // Stable ref to booking so the GPS watch callback can read it without
+    // being recreated on every booking state change
+    const bookingRef = useRef<typeof booking>(null);
 
     const { fetchRoute, routeCoordinates } = useRoute();
+
+    // Keep bookingRef in sync so GPS callback always has the latest status
+    useEffect(() => { bookingRef.current = booking; }, [booking]);
 
     // ── Load booking ──────────────────────────────────────────────────────────
 
@@ -374,6 +420,13 @@ export default function ActiveRide() {
                 if (!cancelled) {
                     latestCoordRef.current = initial;
                     setMarkerInitial(initial.latitude, initial.longitude);
+                    // Immediately pan the map to the driver's real position
+                    mapRef.current?.animateToRegion({
+                        latitude: initial.latitude,
+                        longitude: initial.longitude,
+                        latitudeDelta: 0.04,
+                        longitudeDelta: 0.04,
+                    }, 600);
                 }
 
                 // ── Continuous watch — animate on every new position ──────────
@@ -389,11 +442,28 @@ export default function ActiveRide() {
                             latitude: position.coords.latitude,
                             longitude: position.coords.longitude,
                         };
-                        // Store real position for socket emission
+                        // Store real position for socket emission and route fetching
                         latestCoordRef.current = coord;
                         // Hand off to the animation hook — it lerps position and
                         // derives the bearing automatically.
                         updateMarkerTarget(coord.latitude, coord.longitude);
+
+                        // Re-fetch route every ~100 m so the polyline stays on-road
+                        const prev = lastRouteCoordRef.current;
+                        if (!prev) {
+                            lastRouteCoordRef.current = coord;
+                        } else {
+                            const dLat = coord.latitude - prev.latitude;
+                            const dLng = coord.longitude - prev.longitude;
+                            const approxM = Math.sqrt(dLat * dLat + dLng * dLng) * 111320;
+                            if (approxM > 100 && bookingRef.current) {
+                                lastRouteCoordRef.current = coord;
+                                const dest: Coordinate = bookingRef.current.status === 'started'
+                                    ? { latitude: bookingRef.current.dropoffLocation.latitude, longitude: bookingRef.current.dropoffLocation.longitude }
+                                    : { latitude: bookingRef.current.pickupLocation.latitude, longitude: bookingRef.current.pickupLocation.longitude };
+                                fetchRoute(coord, dest);
+                            }
+                        }
                     },
                 );
             } catch {
@@ -434,17 +504,46 @@ export default function ActiveRide() {
     }, [booking?.status, bookingId]);
 
     // ── Route: driver → pickup (accepted/arriving) or → dropoff (started) ────
+    // We use a ref flag to track whether we've done the initial route fetch for
+    // the current booking status, so we only fire once per status change and
+    // once when GPS first becomes available.
 
+    const routeFetchedForStatusRef = useRef<string | null>(null);
+
+    // Fire whenever booking status changes (clears the flag so we re-fetch)
     useEffect(() => {
-        if (!booking || !animatedCoord) return;
+        routeFetchedForStatusRef.current = null;
+    }, [booking?.status]);
+
+    // Fire on every animatedCoord change — but actually fetches only when:
+    //   (a) we haven't fetched for this status yet, AND
+    //   (b) we have a GPS position
+    useEffect(() => {
+        if (!booking || !latestCoordRef.current) return;
+        // Already fetched for this status+position combination
+        if (routeFetchedForStatusRef.current === booking.status) return;
+
+        routeFetchedForStatusRef.current = booking.status;
+
         const destination: Coordinate =
             booking.status === 'started'
                 ? { latitude: booking.dropoffLocation.latitude, longitude: booking.dropoffLocation.longitude }
                 : { latitude: booking.pickupLocation.latitude, longitude: booking.pickupLocation.longitude };
-        fetchRoute(animatedCoord, destination);
-    // Route re-fetches whenever driver position changes or status changes
+
+        fetchRoute(latestCoordRef.current, destination);
+
+        // Also centre the map on the driver's position the first time
+        if (mapRef.current && latestCoordRef.current) {
+            mapRef.current.animateToRegion({
+                latitude: latestCoordRef.current.latitude,
+                longitude: latestCoordRef.current.longitude,
+                latitudeDelta: 0.04,
+                longitudeDelta: 0.04,
+            }, 600);
+        }
+    // animatedCoord changing is our proxy for "GPS is now available"
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [booking?.status, animatedCoord?.latitude, animatedCoord?.longitude]);
+    }, [booking?.status, animatedCoord]);
 
     // ── Fit map to route ──────────────────────────────────────────────────────
 
@@ -583,16 +682,7 @@ export default function ActiveRide() {
                 ref={mapRef}
                 style={styles.map}
                 provider={PROVIDER_GOOGLE}
-                initialRegion={
-                    animatedCoord
-                        ? {
-                              latitude: animatedCoord.latitude,
-                              longitude: animatedCoord.longitude,
-                              latitudeDelta: 0.06,
-                              longitudeDelta: 0.06,
-                          }
-                        : DEFAULT_REGION
-                }
+                initialRegion={DEFAULT_REGION}
                 showsUserLocation={false}
                 showsMyLocationButton={false}
             >
@@ -619,45 +709,49 @@ export default function ActiveRide() {
                     />
                 )}
 
-                {/* Pickup marker — always visible */}
-                <Marker
-                    coordinate={pickupCoord}
-                    title="Pickup"
-                    anchor={{ x: 0.5, y: 1 }}
-                >
-                    <View style={{ alignItems: 'center' }}>
-                        <View style={{
-                            backgroundColor: Colors.light.primary,
-                            width: 36, height: 36, borderRadius: 18,
-                            alignItems: 'center', justifyContent: 'center',
-                            shadowColor: '#000', shadowOpacity: 0.2, shadowRadius: 4, elevation: 4,
-                        }}>
-                            <Ionicons name="person" size={20} color="#fff" />
+                {/* Pickup marker — visible while heading to or waiting at pickup */}
+                {(booking.status === 'accepted' || booking.status === 'arriving') && (
+                    <Marker
+                        coordinate={pickupCoord}
+                        title="Pickup"
+                        anchor={{ x: 0.5, y: 1 }}
+                    >
+                        <View style={{ alignItems: 'center' }}>
+                            <View style={{
+                                backgroundColor: Colors.light.primary,
+                                width: 36, height: 36, borderRadius: 18,
+                                alignItems: 'center', justifyContent: 'center',
+                                shadowColor: '#000', shadowOpacity: 0.2, shadowRadius: 4, elevation: 4,
+                            }}>
+                                <Ionicons name="person" size={20} color="#fff" />
+                            </View>
+                            <View style={{ width: 2, height: 10, backgroundColor: Colors.light.primary }} />
+                            <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: Colors.light.primary }} />
                         </View>
-                        <View style={{ width: 2, height: 10, backgroundColor: Colors.light.primary }} />
-                        <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: Colors.light.primary }} />
-                    </View>
-                </Marker>
+                    </Marker>
+                )}
 
-                {/* Dropoff marker */}
-                <Marker
-                    coordinate={dropoffCoord}
-                    title="Dropoff"
-                    anchor={{ x: 0.5, y: 1 }}
-                >
-                    <View style={{ alignItems: 'center' }}>
-                        <View style={{
-                            backgroundColor: Colors.light.red ?? '#EF4444',
-                            width: 36, height: 36, borderRadius: 18,
-                            alignItems: 'center', justifyContent: 'center',
-                            shadowColor: '#000', shadowOpacity: 0.2, shadowRadius: 4, elevation: 4,
-                        }}>
-                            <Ionicons name="flag" size={20} color="#fff" />
+                {/* Dropoff marker — visible only after ride has started */}
+                {booking.status === 'started' && (
+                    <Marker
+                        coordinate={dropoffCoord}
+                        title="Dropoff"
+                        anchor={{ x: 0.5, y: 1 }}
+                    >
+                        <View style={{ alignItems: 'center' }}>
+                            <View style={{
+                                backgroundColor: Colors.light.red ?? '#EF4444',
+                                width: 36, height: 36, borderRadius: 18,
+                                alignItems: 'center', justifyContent: 'center',
+                                shadowColor: '#000', shadowOpacity: 0.2, shadowRadius: 4, elevation: 4,
+                            }}>
+                                <Ionicons name="flag" size={20} color="#fff" />
+                            </View>
+                            <View style={{ width: 2, height: 10, backgroundColor: Colors.light.red ?? '#EF4444' }} />
+                            <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: Colors.light.red ?? '#EF4444' }} />
                         </View>
-                        <View style={{ width: 2, height: 10, backgroundColor: Colors.light.red ?? '#EF4444' }} />
-                        <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: Colors.light.red ?? '#EF4444' }} />
-                    </View>
-                </Marker>
+                    </Marker>
+                )}
             </MapView>
 
             {/* Recenter button */}
@@ -720,6 +814,44 @@ export default function ActiveRide() {
                         </View>
                     )}
 
+                    {/* Call + Chat action row */}
+                    {customer && (
+                        <View style={styles.contactRow}>
+                            {/* Call button */}
+                            <TouchableOpacity
+                                style={styles.contactBtn}
+                                onPress={() => {
+                                    const phone = customer.phone?.replace(/\s+/g, '');
+                                    if (!phone) {
+                                        Alert.alert('No phone number', 'Customer phone number is not available.');
+                                        return;
+                                    }
+                                    Linking.openURL(`tel:${phone}`);
+                                }}
+                                activeOpacity={0.8}
+                            >
+                                <View style={[styles.contactIcon, { backgroundColor: '#22C55E' }]}>
+                                    <Ionicons name="call" size={20} color="#fff" />
+                                </View>
+                                <Text style={styles.contactLabel}>Call</Text>
+                            </TouchableOpacity>
+
+                            <View style={styles.contactDivider} />
+
+                            {/* Chat button */}
+                            <TouchableOpacity
+                                style={styles.contactBtn}
+                                onPress={() => setShowChat(true)}
+                                activeOpacity={0.8}
+                            >
+                                <View style={[styles.contactIcon, { backgroundColor: Colors.light.primary }]}>
+                                    <Ionicons name="chatbubble-ellipses" size={20} color="#fff" />
+                                </View>
+                                <Text style={styles.contactLabel}>Chat</Text>
+                            </TouchableOpacity>
+                        </View>
+                    )}
+
                     {/* Waiting message */}
                     {(cardContent as any).waitingMessage && (
                         <View style={styles.waitingBox}>
@@ -753,7 +885,7 @@ export default function ActiveRide() {
                 </View>
             )}
 
-            {/* ── Ride Completed overlay ──────────────────────────────────── */}
+            {/* Ride Completed overlay */}
             {showCompleted && (
                 <View style={styles.completedOverlay}>
                     <View style={styles.completedCard}>
@@ -774,6 +906,23 @@ export default function ActiveRide() {
                         </TouchableOpacity>
                     </View>
                 </View>
+            )}
+
+            {/* In-ride Chat Modal */}
+            {booking && customer && (
+                <ChatModal
+                    visible={showChat}
+                    onClose={() => setShowChat(false)}
+                    bookingId={booking._id}
+                    myId={user?._id ?? ''}
+                    myName={user?.name ?? 'Driver'}
+                    recipientId={
+                        typeof booking.customer === 'object'
+                            ? (booking.customer as any)._id
+                            : booking.customer as string
+                    }
+                    recipientName={customer.name ?? 'Customer'}
+                />
             )}
         </View>
     );
