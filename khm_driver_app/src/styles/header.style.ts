@@ -1,27 +1,33 @@
-import { StyleSheet } from 'react-native';
+import { Platform, StyleSheet } from 'react-native';
+import { Colors } from '../constants/theme';
 
 export const styles = StyleSheet.create({
   header: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 20,
-    paddingTop: 50, // Assuming some safe area padding
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingTop: Platform.OS === 'ios' ? 56 : 40,
     paddingBottom: 16,
-    backgroundColor: '#FFFFFF',
-    borderBottomWidth: 1,
-    borderBottomColor: '#E0E0E0',
+    backgroundColor: Colors.light.background,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: Colors.light.border,
   },
   backButton: {
-    position: 'absolute',
-    left: 20,
-    top: 50, // Matches paddingTop of header
-    zIndex: 1,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: Colors.light.success,
   },
   headerTitle: {
-    flex: 1,
-    textAlign: 'center',
-    fontSize: 20,
+    fontSize: 18,
     fontWeight: '700',
-    color: '#1B7339', // KHM Driver green
+    color: Colors.light.text,
+    textAlign: 'center',
+  },
+  rightSpacer: {
+    width: 40,
   },
 });

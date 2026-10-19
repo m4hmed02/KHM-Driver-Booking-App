@@ -55,6 +55,7 @@ export interface ServerToClientEvents {
 // ─── Singleton management ────────────────────────────────────────────────────
 
 let socket: Socket<ServerToClientEvents> | null = null;
+let registeredUserId: string | null = null;
 
 const API_URL = process.env.EXPO_PUBLIC_API_URL ?? '';
 const SERVER_URL = API_URL.replace(/\/api\/?$/, '');
@@ -64,8 +65,8 @@ const SERVER_URL = API_URL.replace(/\/api\/?$/, '');
  * Safe to call multiple times — will reuse an existing connected socket.
  */
 export const connectSocket = (token: string, userId?: string): Socket<ServerToClientEvents> => {
-    if (socket?.connected) {
-        return socket;
+    if (userId) {
+        registeredUserId = userId;
     }
 
     if (!socket) {
@@ -73,15 +74,15 @@ export const connectSocket = (token: string, userId?: string): Socket<ServerToCl
             auth: { token },
             transports: ['websocket'],
             reconnection: true,
-            reconnectionAttempts: 5,
-            reconnectionDelay: 2000,
+            reconnectionAttempts: 10,
+            reconnectionDelay: 1500,
         }) as Socket<ServerToClientEvents>;
 
         socket.on('connect', () => {
             console.log('[CustomerSocket] Connected:', socket?.id);
-            // Re-register userId on reconnect
-            if (userId) {
-                socket?.emit('register' as any, userId);
+            // Re-register userId on connect and reconnect
+            if (registeredUserId) {
+                socket?.emit('register' as any, registeredUserId);
             }
         });
 
@@ -98,12 +99,19 @@ export const connectSocket = (token: string, userId?: string): Socket<ServerToCl
         });
     }
 
-    if (userId) {
-        // Register (or re-register) on the server's userId→socketId map
-        socket.emit('register' as any, userId);
+    if (registeredUserId && socket.connected) {
+        socket.emit('register' as any, registeredUserId);
     }
 
     return socket;
+};
+
+/**
+ * Joins a specific booking room for real-time broadcasts
+ */
+export const joinBookingRoom = (bookingId: string): void => {
+    if (!socket || !bookingId) return;
+    socket.emit('join_booking' as any, bookingId);
 };
 
 /**

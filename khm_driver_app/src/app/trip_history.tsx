@@ -1,88 +1,150 @@
+import React, { useEffect, useState, useCallback } from 'react';
+import {
+  View,
+  Text,
+  FlatList,
+  ActivityIndicator,
+  RefreshControl,
+} from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
-import { FlatList, Text, TouchableOpacity, View } from 'react-native';
-import { Header } from '../components/Header';
-import { TripHistoryCard } from '../components/TripHistoryCard';
 import { Colors } from '../constants/theme';
+import { TripHistoryCard } from '../components/TripHistoryCard';
+import { Header } from '../components/Header';
 import { styles } from '../styles/trip_history.styles';
+import { getMyBookingsApi } from '../services/apis/booking/bookingService';
+import { Booking } from '../services/apis/booking/type';
 
-const MOCK_TRIPS = [
-  {
-    id: '1',
-    date: 'Today, 2:30 PM',
-    price: '$24.50',
-    status: 'COMPLETED' as const,
-    pickup: '124 Main Street, Downtown',
-    dropoff: '789 Airport Blvd, Terminal 2',
-  },
-  {
-    id: '2',
-    date: 'Yesterday, 9:15 AM',
-    price: '$18.00',
-    status: 'COMPLETED' as const,
-    pickup: '456 Elm St, Westside',
-    dropoff: 'Tech Park, Building C',
-  },
-  {
-    id: '3',
-    date: 'Oct 24, 6:45 PM',
-    price: '$32.75',
-    status: 'CANCELED' as const,
-    pickup: 'North Station',
-    dropoff: 'City Central Mall',
-  },
-];
+function formatTripDate(dateString: string): string {
+  try {
+    const d = new Date(dateString);
+    if (isNaN(d.getTime())) return dateString;
+
+    const now = new Date();
+    const isToday = d.toDateString() === now.toDateString();
+
+    const yesterday = new Date(now);
+    yesterday.setDate(yesterday.getDate() - 1);
+    const isYesterday = d.toDateString() === yesterday.toDateString();
+
+    const timeStr = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', hour12: true });
+
+    if (isToday) {
+      return `Today, ${timeStr}`;
+    }
+    if (isYesterday) {
+      return `Yesterday, ${timeStr}`;
+    }
+
+    const monthStr = d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+    return `${monthStr}, ${timeStr}`;
+  } catch {
+    return dateString;
+  }
+}
 
 export default function TripHistory() {
-  const router = useRouter();
+  const [trips, setTrips] = useState<Booking[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+
+  const fetchTrips = useCallback(async () => {
+    try {
+      const data = await getMyBookingsApi();
+      if (Array.isArray(data)) {
+        // Show real driver ride history: completed and cancelled bookings
+        const historyTrips = data.filter(
+          (b) => b.status === 'completed' || b.status === 'cancelled'
+        );
+        setTrips(historyTrips);
+      }
+    } catch (error) {
+      console.warn('[DriverTripHistory] Failed to fetch trips:', error);
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchTrips();
+  }, [fetchTrips]);
+
+  const onRefresh = useCallback(() => {
+    setRefreshing(true);
+    fetchTrips();
+  }, [fetchTrips]);
+
+  const totalEarnings = trips
+    .filter((t) => t.status === 'completed')
+    .reduce((sum, t) => sum + (t.estimatedFare || 0), 0);
 
   return (
     <View style={styles.container}>
-      <Header title="KHM Driver" />
+      <Header title="Ride History" />
 
-      <FlatList
-        data={MOCK_TRIPS}
-        keyExtractor={(item) => item.id}
-        ListHeaderComponent={
-          <View style={styles.headerSection}>
-            <View style={styles.headerTextContainer}>
-              <Text style={styles.title}>Recent Trips</Text>
-              <Text style={styles.subtitle}>Review your driving history and earnings.</Text>
+      {loading ? (
+        <View style={styles.loadingContainer}>
+          <ActivityIndicator size="large" color={Colors.light.primary} />
+          <Text style={styles.loadingText}>Loading your trip history…</Text>
+        </View>
+      ) : (
+        <FlatList
+          data={trips}
+          keyExtractor={(item) => item._id}
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={onRefresh}
+              colors={[Colors.light.primary]}
+              tintColor={Colors.light.primary}
+            />
+          }
+          ListHeaderComponent={
+            <View style={styles.headerSection}>
+              <View style={styles.headerTextContainer}>
+                <Text style={styles.title}>Recent Trips</Text>
+                <Text style={styles.subtitle}>Review your driving history and earnings.</Text>
+              </View>
+              <View style={styles.earningsContainer}>
+                <Text style={styles.earningsLabel}>TOTAL EARNINGS</Text>
+                <Text style={styles.earningsValue}>AED {totalEarnings.toFixed(2)}</Text>
+              </View>
             </View>
-            <View style={styles.earningsContainer}>
-              <Text style={styles.earningsLabel}>THIS WEEK</Text>
-              <Text style={styles.earningsValue}>$482.50</Text>
-            </View>
-          </View>
-        }
-        contentContainerStyle={styles.listContainer}
-        renderItem={({ item }) => (
-          <TripHistoryCard
-            date={item.date}
-            price={item.price}
-            status={item.status}
-            pickup={item.pickup}
-            dropoff={item.dropoff}
-            onPress={() => console.log('Trip clicked', item.id)}
-          />
-        )}
-      />
+          }
+          contentContainerStyle={styles.listContainer}
+          renderItem={({ item }) => {
+            const isCompleted = item.status === 'completed';
+            const priceDisplay = `AED ${(item.estimatedFare || 0).toFixed(2)}`;
+            const pickupAddr = item.pickupLocation?.address || 'Pickup location';
+            const dropoffAddr = item.dropoffLocation?.address || 'Dropoff location';
+            const dateDisplay = formatTripDate(item.createdAt);
 
-      {/* Bottom Navigation */}
-      <View style={styles.bottomNav}>
-        <TouchableOpacity style={styles.navItem} onPress={() => router.replace('/home')}>
-          <Ionicons name="home-outline" size={24} color={Colors.light.icon} />
-          <Text style={[styles.navText, { color: Colors.light.icon }]}>Home</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.navItem}>
-          <Ionicons name="time" size={24} color={Colors.light.primary} />
-          <Text style={[styles.navText, { color: Colors.light.primary }]}>History</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.navItem} onPress={() => router.push('/profile')}>
-          <Ionicons name="person-outline" size={24} color={Colors.light.icon} />
-          <Text style={[styles.navText, { color: Colors.light.icon }]}>Profile</Text>
-        </TouchableOpacity>
-      </View>
+            return (
+              <TripHistoryCard
+                date={dateDisplay}
+                price={priceDisplay}
+                status={isCompleted ? 'COMPLETED' : 'CANCELED'}
+                pickup={pickupAddr}
+                dropoff={dropoffAddr}
+              />
+            );
+          }}
+          ListEmptyComponent={
+            <View style={styles.emptyContainer}>
+              <Ionicons
+                name="car-outline"
+                size={48}
+                color={Colors.light.secondaryText}
+                style={{ opacity: 0.4 }}
+              />
+              <Text style={styles.emptyTitle}>No ride history yet</Text>
+              <Text style={styles.emptySubtitle}>
+                Your completed trips will appear here.
+              </Text>
+            </View>
+          }
+        />
+      )}
     </View>
   );
-}
+}

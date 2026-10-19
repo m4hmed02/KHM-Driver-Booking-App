@@ -41,7 +41,7 @@ import {
     updateBookingStatusApi,
 } from '../services/apis/booking/bookingService';
 import { Booking, CustomerInfo } from '../services/apis/booking/type';
-import { connectSocket, emitDriverLocation, getSocket } from '../services/socket';
+import { connectSocket, emitDriverLocation, getSocket, joinBookingRoom } from '../services/socket';
 import { useAuth } from '../context/AuthContext';
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
@@ -377,10 +377,13 @@ export default function ActiveRide() {
 
     useEffect(() => {
         if (!user?.token) return;
-        const socket = connectSocket(user.token);
+        const socket = connectSocket(user.token, user._id);
 
         // Register user so backend can map userId → socketId
         socket.emit('register' as any, user._id);
+        if (bookingId) {
+            joinBookingRoom(bookingId);
+        }
 
         const handleCustomerComing = (payload: { bookingId: string }) => {
             if (payload.bookingId === bookingId) {
@@ -892,14 +895,17 @@ export default function ActiveRide() {
                         <View style={styles.completedIcon}>
                             <Ionicons name="checkmark" size={44} color={Colors.light.primaryDark} />
                         </View>
-                        <Text style={styles.completedTitle}>Ride Completed! 🎉</Text>
+                        <Text style={styles.completedTitle}>Ride Completed</Text>
                         <Text style={styles.completedSubtitle}>
                             You have successfully dropped off the customer.
                             {'\n'}Great job!
                         </Text>
                         <TouchableOpacity
                             style={styles.completedButton}
-                            onPress={() => router.replace('/trip_completed')}
+                            onPress={() => {
+                                const fare = booking?.estimatedFare ?? 0;
+                                router.replace(`/trip_completed?bookingId=${booking?._id || bookingId}&fare=${fare}`);
+                            }}
                             activeOpacity={0.85}
                         >
                             <Text style={styles.completedButtonText}>View Trip Summary</Text>

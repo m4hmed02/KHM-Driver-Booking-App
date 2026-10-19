@@ -87,6 +87,7 @@ export interface ServerToClientEvents {
 // ─── Singleton management ────────────────────────────────────────────────────
 
 let socket: Socket<ServerToClientEvents> | null = null;
+let registeredUserId: string | null = null;
 
 const API_URL = process.env.EXPO_PUBLIC_API_URL ?? '';
 // Strip the /api suffix to get the base server URL for Socket.io
@@ -96,37 +97,54 @@ const SERVER_URL = API_URL.replace(/\/api\/?$/, '');
  * Create and connect the socket with the driver's auth token.
  * Safe to call multiple times — will reuse an existing connected socket.
  */
-export const connectSocket = (token: string): Socket<ServerToClientEvents> => {
-    if (socket) {
-        return socket;
+export const connectSocket = (token: string, userId?: string): Socket<ServerToClientEvents> => {
+    if (userId) {
+        registeredUserId = userId;
     }
 
-    socket = io(SERVER_URL, {
-        auth: { token },
-        transports: ['websocket'],
-        reconnection: true,
-        reconnectionAttempts: 5,
-        reconnectionDelay: 2000,
-    }) as Socket<ServerToClientEvents>;
+    if (!socket) {
+        socket = io(SERVER_URL, {
+            auth: { token },
+            transports: ['websocket'],
+            reconnection: true,
+            reconnectionAttempts: 10,
+            reconnectionDelay: 1500,
+        }) as Socket<ServerToClientEvents>;
 
-    socket.on('connect', () => {
-        console.log('[Socket] Connected:', socket?.id);
-    });
+        socket.on('connect', () => {
+            console.log('[Socket] Connected:', socket?.id);
+            if (registeredUserId) {
+                socket?.emit('register' as any, registeredUserId);
+            }
+        });
 
-    socket.on('disconnect', (reason) => {
-        console.log('[Socket] Disconnected:', reason);
-    });
+        socket.on('disconnect', (reason) => {
+            console.log('[Socket] Disconnected:', reason);
+        });
 
-    socket.on('connect_error', (err) => {
-        console.warn('[Socket] Connection error:', err.message);
-    });
+        socket.on('connect_error', (err) => {
+            console.warn('[Socket] Connection error:', err.message);
+        });
 
-    // Debug all incoming events
-    socket.onAny((eventName, ...args) => {
-        console.log(`[Socket] Received event: ${eventName}`, JSON.stringify(args, null, 2));
-    });
+        // Debug all incoming events
+        socket.onAny((eventName, ...args) => {
+            console.log(`[Socket] Received event: ${eventName}`, JSON.stringify(args, null, 2));
+        });
+    }
+
+    if (registeredUserId && socket.connected) {
+        socket.emit('register' as any, registeredUserId);
+    }
 
     return socket;
+};
+
+/**
+ * Joins a specific booking room for real-time broadcasts
+ */
+export const joinBookingRoom = (bookingId: string): void => {
+    if (!socket || !bookingId) return;
+    socket.emit('join_booking' as any, bookingId);
 };
 
 /**

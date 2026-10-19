@@ -21,11 +21,11 @@ function SocketManager() {
 
   useEffect(() => {
     if (user?.token) {
-      connectSocket(user.token);
+      connectSocket(user.token, user._id);
     } else {
       disconnectSocket();
     }
-  }, [user?.token]);
+  }, [user?.token, user?._id]);
 
   return null;
 }

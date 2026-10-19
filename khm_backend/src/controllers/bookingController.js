@@ -191,3 +191,12 @@ exports.rejectDriverOffer = async (req, res) => {
     res.status(error.statusCode || 500).json({ message: error.message });
   }
 };
+
+exports.getBookingMessages = async (req, res) => {
+  try {
+    const messages = await bookingService.getBookingMessages(req.params.id);
+    res.status(200).json(messages);
+  } catch (error) {
+    res.status(error.statusCode || 500).json({ message: error.message });
+  }
+};

@@ -5,8 +5,9 @@
  * Messages are relayed via the backend socket server.
  */
 import { Ionicons } from '@expo/vector-icons';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import {
+    ActivityIndicator,
     FlatList,
     KeyboardAvoidingView,
     Modal,
@@ -17,7 +18,8 @@ import {
     TouchableOpacity,
     View,
 } from 'react-native';
-import { ChatMessagePayload, emitChatMessage, getSocket } from '../services/socket';
+import { ChatMessagePayload, emitChatMessage, getSocket, joinBookingRoom } from '../services/socket';
+import { getBookingMessagesApi } from '../services/apis/booking/bookingService';
 import { Colors } from '../constants/theme';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -54,32 +56,95 @@ export default function ChatModal({
 }: Props) {
     const [messages, setMessages] = useState<ChatMessage[]>([]);
     const [inputText, setInputText] = useState('');
+    const [isLoadingHistory, setIsLoadingHistory] = useState(false);
     const listRef = useRef<FlatList>(null);
 
-    // Subscribe to incoming chat messages
+    // Load message history from server whenever modal opens or booking changes
+    const loadHistory = useCallback(async () => {
+        if (!bookingId) return;
+        setIsLoadingHistory(true);
+        try {
+            const history = await getBookingMessagesApi(bookingId);
+            if (Array.isArray(history)) {
+                const formatted: ChatMessage[] = history.map((m: any) => {
+                    const sId = m.senderId ? (typeof m.senderId === 'object' ? m.senderId._id?.toString() || '' : m.senderId.toString()) : '';
+                    return {
+                        id: `${m.timestamp || Date.now()}-${sId}-${m.text}`,
+                        senderId: sId,
+                        senderName: m.senderName || '',
+                        text: m.text,
+                        timestamp: m.timestamp || Date.now(),
+                        isMine: sId === (myId?.toString() || ''),
+                    };
+                });
+
+                setMessages(prev => {
+                    const map = new Map<string, ChatMessage>();
+                    formatted.forEach(item => map.set(item.id, item));
+                    prev.forEach(item => {
+                        if (!map.has(item.id)) map.set(item.id, item);
+                    });
+                    return Array.from(map.values()).sort((a, b) => a.timestamp - b.timestamp);
+                });
+            }
+        } catch (err) {
+            console.warn('[DriverChatModal] Failed to load message history:', err);
+        } finally {
+            setIsLoadingHistory(false);
+        }
+    }, [bookingId, myId]);
+
+    // When modal becomes visible, join room, register user, and load history
     useEffect(() => {
-        if (!visible) return;
+        if (!visible || !bookingId) return;
+
+        const socket = getSocket();
+        if (socket) {
+            if (myId) {
+                socket.emit('register' as any, myId.toString());
+            }
+            joinBookingRoom(bookingId);
+        }
+
+        loadHistory();
+    }, [visible, bookingId, myId, loadHistory]);
+
+    // Real-time chat message listener
+    useEffect(() => {
+        if (!bookingId) return;
         const socket = getSocket();
         if (!socket) return;
 
+        joinBookingRoom(bookingId);
+
         const handler = (payload: ChatMessagePayload) => {
-            if (payload.bookingId !== bookingId) return;
-            setMessages(prev => [
-                ...prev,
-                {
-                    id: `${payload.timestamp}-${payload.senderId}`,
-                    senderId: payload.senderId,
-                    senderName: payload.senderName,
-                    text: payload.text,
-                    timestamp: payload.timestamp,
-                    isMine: payload.senderId === myId,
-                },
-            ]);
+            if (!payload || payload.bookingId !== bookingId) return;
+            const sId = payload.senderId ? payload.senderId.toString() : '';
+            const msgId = `${payload.timestamp}-${sId}-${payload.text}`;
+
+            setMessages(prev => {
+                if (prev.some(m => m.id === msgId || (m.timestamp === payload.timestamp && m.text === payload.text && m.senderId === sId))) {
+                    return prev;
+                }
+                return [
+                    ...prev,
+                    {
+                        id: msgId,
+                        senderId: sId,
+                        senderName: payload.senderName || '',
+                        text: payload.text,
+                        timestamp: payload.timestamp || Date.now(),
+                        isMine: sId === (myId?.toString() || ''),
+                    },
+                ];
+            });
         };
 
         socket.on('chat_message', handler);
-        return () => { socket.off('chat_message', handler); };
-    }, [visible, bookingId, myId]);
+        return () => {
+            socket.off('chat_message', handler);
+        };
+    }, [bookingId, myId]);
 
     // Auto-scroll to bottom when messages change
     useEffect(() => {
@@ -90,15 +155,18 @@ export default function ChatModal({
 
     const handleSend = () => {
         const text = inputText.trim();
-        if (!text) return;
+        if (!text || !bookingId) return;
+
+        const timestamp = Date.now();
+        const msgId = `${timestamp}-${myId}-${text}`;
 
         // Optimistically add our own message
         const msg: ChatMessage = {
-            id: `${Date.now()}-${myId}`,
-            senderId: myId,
-            senderName: myName,
+            id: msgId,
+            senderId: myId ? myId.toString() : '',
+            senderName: myName || 'Driver',
             text,
-            timestamp: Date.now(),
+            timestamp,
             isMine: true,
         };
         setMessages(prev => [...prev, msg]);
@@ -110,7 +178,7 @@ export default function ChatModal({
     const renderItem = ({ item }: { item: ChatMessage }) => (
         <View style={[styles.bubble, item.isMine ? styles.bubbleMine : styles.bubbleTheirs]}>
             {!item.isMine && (
-                <Text style={styles.bubbleSender}>{item.senderName}</Text>
+                <Text style={styles.bubbleSender}>{item.senderName || recipientName}</Text>
             )}
             <Text style={[styles.bubbleText, item.isMine ? styles.bubbleTextMine : styles.bubbleTextTheirs]}>
                 {item.text}
@@ -151,19 +219,26 @@ export default function ChatModal({
                 </View>
 
                 {/* Messages */}
-                <FlatList
-                    ref={listRef}
-                    data={messages}
-                    keyExtractor={item => item.id}
-                    renderItem={renderItem}
-                    contentContainerStyle={styles.messageList}
-                    ListEmptyComponent={
-                        <View style={styles.emptyState}>
-                            <Ionicons name="chatbubbles-outline" size={40} color={Colors.light.border} />
-                            <Text style={styles.emptyText}>No messages yet.{'\n'}Say hi! 👋</Text>
-                        </View>
-                    }
-                />
+                {isLoadingHistory && messages.length === 0 ? (
+                    <View style={styles.emptyState}>
+                        <ActivityIndicator size="small" color={Colors.light.primary} />
+                        <Text style={styles.emptyText}>Loading chat…</Text>
+                    </View>
+                ) : (
+                    <FlatList
+                        ref={listRef}
+                        data={messages}
+                        keyExtractor={item => item.id}
+                        renderItem={renderItem}
+                        contentContainerStyle={styles.messageList}
+                        ListEmptyComponent={
+                            <View style={styles.emptyState}>
+                                <Ionicons name="chatbubbles-outline" size={40} color={Colors.light.border} />
+                                <Text style={styles.emptyText}>No messages yet.{'\n'}Say hi! 👋</Text>
+                            </View>
+                        }
+                    />
+                )}
 
                 {/* Input bar */}
                 <View style={styles.inputBar}>

@@ -429,7 +429,7 @@ export default function Home() {
     // ── Socket listeners ──────────────────────────────────────────────────────
     useEffect(() => {
         if (!user?.token) return;
-        const socket = connectSocket(user.token);
+        const socket = connectSocket(user.token, user._id);
         socket.emit('register' as any, user._id);
 
         const debugListener = (eventName: string, ...args: any[]) => {

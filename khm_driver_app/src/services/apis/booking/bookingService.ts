@@ -96,3 +96,27 @@ export const acceptScheduledBookingApi = async (bookingId: string): Promise<Book
     throw new Error(message);
   }
 };
+
+// Fetch in-ride chat messages for a specific booking
+export const getBookingMessagesApi = async (bookingId: string): Promise<any[]> => {
+  const headers = await getAuthHeader();
+  try {
+    const response = await axios.get(`${API_URL}/bookings/${bookingId}/messages`, { headers });
+    return response.data || [];
+  } catch (error: any) {
+    console.warn('[getBookingMessagesApi] Failed to load messages:', error?.message);
+    return [];
+  }
+};
+
+// Fetch all ride history for the logged-in driver
+export const getMyBookingsApi = async (): Promise<Booking[]> => {
+  const headers = await getAuthHeader();
+  try {
+    const response = await axios.get(`${API_URL}/bookings/my`, { headers });
+    return response.data || [];
+  } catch (error: any) {
+    const message = error.response?.data?.message || 'Failed to fetch ride history';
+    throw new Error(message);
+  }
+};

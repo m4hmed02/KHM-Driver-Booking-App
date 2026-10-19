@@ -44,6 +44,14 @@ const bookingSchema = new mongoose.Schema({
     enum: ['requesting', 'accepted', 'arriving', 'started', 'completed', 'cancelled'],
     default: 'requesting',
   },
+
+  // In-ride chat messages history
+  messages: [{
+    senderId: { type: String, default: '' },
+    senderName: { type: String, default: '' },
+    text: { type: String, required: true },
+    timestamp: { type: Number, default: Date.now },
+  }],
 }, { timestamps: true });
 
 bookingSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });

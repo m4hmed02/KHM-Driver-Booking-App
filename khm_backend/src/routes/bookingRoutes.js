@@ -12,6 +12,7 @@ const {
   acceptDriverOffer,
   acceptScheduledBooking,
   rejectDriverOffer,
+  getBookingMessages,
 } = require('../controllers/bookingController');
 const { protect } = require('../middleware/authMiddleware');
 
@@ -21,6 +22,7 @@ router.get('/scheduled', protect, getScheduledBookings);    // schedule_driver o
 router.get('/my', protect, getMyBookings);                  // customer's own bookings
 router.delete('/:id', protect, deleteBooking);
 router.get('/:id', protect, getBookingStatus);
+router.get('/:id/messages', protect, getBookingMessages);   // in-ride chat messages history
 router.patch('/:id/status', protect, updateBookingStatus);
 
 // Bidding routes (driver_now)

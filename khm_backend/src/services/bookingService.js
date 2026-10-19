@@ -154,9 +154,12 @@ exports.getBookingStatus = async (bookingId) => {
   return booking;
 };
 
-exports.getMyBookings = async (customerId) => {
-  return await Booking.find({ customer: customerId })
-    .populate('driver', 'name phone avatar')
+exports.getMyBookings = async (userId) => {
+  return await Booking.find({
+    $or: [{ customer: userId }, { driver: userId }],
+  })
+    .populate('driver', 'name phone avatar rating')
+    .populate('customer', 'name phone avatar rating')
     .sort({ createdAt: -1 });
 };
 
@@ -189,4 +192,24 @@ exports.rejectDriverOffer = async (bookingId, customerId, driverId) => {
   return await Booking.findById(bookingId)
     .populate('offers.driver', 'name phone avatar rating')
     .populate('customer', 'name phone avatar');
+};
+
+exports.getBookingMessages = async (bookingId) => {
+  const booking = await Booking.findById(bookingId).select('messages');
+  return booking ? booking.messages || [] : [];
+};
+
+exports.addBookingMessage = async (bookingId, messageData) => {
+  const update = {
+    $push: {
+      messages: {
+        senderId: messageData.senderId ? messageData.senderId.toString() : '',
+        senderName: messageData.senderName || '',
+        text: messageData.text,
+        timestamp: messageData.timestamp || Date.now(),
+      },
+    },
+  };
+  const updated = await Booking.findByIdAndUpdate(bookingId, update, { new: true }).select('messages');
+  return updated ? updated.messages : [];
 };

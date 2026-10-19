@@ -4,34 +4,34 @@ import { Colors } from '../constants/theme';
 export const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#F8F9FA', // Slightly gray background like the screenshot
+    backgroundColor: '#F8F9FA',
   },
   headerSection: {
-    paddingHorizontal: 24,
-    paddingTop: 24,
-    paddingBottom: 20,
+    paddingHorizontal: 20,
+    paddingTop: 20,
+    paddingBottom: 16,
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'flex-start',
   },
   headerTextContainer: {
     flex: 1,
-    paddingRight: 16,
+    paddingRight: 12,
   },
   title: {
-    fontSize: 28,
+    fontSize: 26,
     fontWeight: '700',
     color: Colors.light.text,
-    marginBottom: 6,
+    marginBottom: 4,
   },
   subtitle: {
-    fontSize: 15,
+    fontSize: 14,
     color: Colors.light.secondaryText,
-    lineHeight: 22,
+    lineHeight: 20,
   },
   earningsContainer: {
     alignItems: 'flex-end',
-    marginTop: 8,
+    marginTop: 4,
   },
   earningsLabel: {
     fontSize: 11,
@@ -41,30 +41,44 @@ export const styles = StyleSheet.create({
     marginBottom: 2,
   },
   earningsValue: {
-    fontSize: 22,
+    fontSize: 20,
     fontWeight: '700',
-    color: Colors.light.primaryDark,
+    color: Colors.light.primary,
   },
   listContainer: {
     paddingHorizontal: 20,
     paddingBottom: 40,
+    flexGrow: 1,
   },
-  bottomNav: {
-    flexDirection: 'row',
-    justifyContent: 'space-around',
+  loadingContainer: {
+    flex: 1,
     alignItems: 'center',
-    paddingVertical: 12,
-    paddingBottom: 32, // Approximate safe area for bottom
-    backgroundColor: Colors.light.background,
-    borderTopWidth: 1,
-    borderTopColor: Colors.light.border,
+    justifyContent: 'center',
+    paddingTop: 80,
+    gap: 12,
   },
-  navItem: {
+  loadingText: {
+    fontSize: 14,
+    color: Colors.light.secondaryText,
+  },
+  emptyContainer: {
+    flex: 1,
     alignItems: 'center',
+    justifyContent: 'center',
+    paddingTop: 80,
+    paddingHorizontal: 32,
+    gap: 8,
   },
-  navText: {
-    fontSize: 12,
-    fontWeight: '500',
-    marginTop: 4,
-  }
+  emptyTitle: {
+    fontSize: 17,
+    fontWeight: '700',
+    color: Colors.light.text,
+    marginTop: 8,
+  },
+  emptySubtitle: {
+    fontSize: 13,
+    color: Colors.light.secondaryText,
+    textAlign: 'center',
+    lineHeight: 18,
+  },
 });

@@ -131,3 +131,15 @@ export const getMyBookingsApi = async (): Promise<Booking[]> => {
     throw new Error(message);
   }
 };
+
+// Fetch in-ride chat messages for a specific booking
+export const getBookingMessagesApi = async (bookingId: string): Promise<any[]> => {
+  const headers = await getAuthHeader();
+  try {
+    const response = await axios.get(`${API_URL}/bookings/${bookingId}/messages`, { headers });
+    return response.data || [];
+  } catch (error: any) {
+    console.warn('[getBookingMessagesApi] Failed to load messages:', error?.message);
+    return [];
+  }
+};
