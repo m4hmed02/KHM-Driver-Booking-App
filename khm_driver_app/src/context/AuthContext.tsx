@@ -1,13 +1,14 @@
 import React, { createContext, useState, useContext, useEffect } from 'react';
 import * as SecureStore from 'expo-secure-store';
-import { loginApi, registerApi } from '../services/apis/auth/authService';
-import { LoginPayload, RegisterPayload, User } from '../services/apis/auth/type';
+import { loginApi, registerApi, verifyLoginOtpApi } from '../services/apis/auth/authService';
+import { LoginPayload, LoginResponse, RegisterPayload, User } from '../services/apis/auth/type';
 
 interface AuthContextType {
     user: User | null;
     isLoading: boolean;
-    login: (payload: LoginPayload) => Promise<void>;
-    register: (payload: RegisterPayload) => Promise<void>;
+    login: (payload: LoginPayload) => Promise<LoginResponse>;
+    verifyLoginOtp: (phone: string, otp: string) => Promise<User>;
+    register: (payload: RegisterPayload) => Promise<User>;
     logout: () => Promise<void>;
 }
 
@@ -37,17 +38,28 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const saveSession = async (userData: User) => {
         setUser(userData);
         await SecureStore.setItemAsync('user_session', JSON.stringify(userData));
-        await SecureStore.setItemAsync('user_token', userData.token);
+        if (userData.token) {
+            await SecureStore.setItemAsync('user_token', userData.token);
+        }
     };
 
-    const login = async (payload: LoginPayload) => {
-        const userData = await loginApi(payload);
+    const login = async (payload: LoginPayload): Promise<LoginResponse> => {
+        const res = await loginApi(payload);
+        if (res.token && res._id) {
+            await saveSession(res as User);
+        }
+        return res;
+    };
+
+    const verifyLoginOtp = async (phone: string, otp: string): Promise<User> => {
+        const userData = await verifyLoginOtpApi({ phone, otp });
         await saveSession(userData);
+        return userData;
     };
 
-    const register = async (payload: RegisterPayload) => {
+    const register = async (payload: RegisterPayload): Promise<User> => {
         const userData = await registerApi(payload);
-        await saveSession(userData);
+        return userData;
     };
 
     const logout = async () => {
@@ -57,7 +69,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
 
     return (
-        <AuthContext.Provider value={{ user, isLoading, login, register, logout }}>
+        <AuthContext.Provider value={{ user, isLoading, login, verifyLoginOtp, register, logout }}>
             {children}
         </AuthContext.Provider>
     );

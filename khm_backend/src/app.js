@@ -8,6 +8,18 @@ app.use(cors());
 app.use(express.json());
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
+// ── Global Request Logger ───────────────────────────────────────────────────
+app.use((req, res, next) => {
+  const time = new Date().toLocaleTimeString();
+  console.log(`\n📡 [${time}] ${req.method} ${req.originalUrl}`);
+  if (req.body && Object.keys(req.body).length > 0) {
+    const safeBody = { ...req.body };
+    if (safeBody.password) safeBody.password = '******';
+    console.log('   Payload:', JSON.stringify(safeBody));
+  }
+  next();
+});
+
 app.get('/', (req, res) => {
   res.send('KHM Backend API is running...');
 });
