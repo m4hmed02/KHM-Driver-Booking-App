@@ -4,6 +4,7 @@ import Animated, {
     useAnimatedStyle,
     useSharedValue,
     withSpring,
+    runOnUI,
 } from 'react-native-reanimated';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 
@@ -101,15 +102,13 @@ export const DraggableBottomSheet = forwardRef<DraggableBottomSheetRef, Draggabl
 
     useImperativeHandle(ref, () => ({
         snapToIndex: (index: number) => {
-            'worklet';
-            // Index 0 = highest fraction (most visible) in snapping logic??
-            // Let's check snaps array: SCREEN_HEIGHT * (1 - f)
-            // if snapPoints = [0.45, 0.70, 0.93], snaps = [0.55H, 0.3H, 0.07H]
-            // We want index 2 to be the 0.93 fraction (highest).
             const target = snaps[index];
             if (target !== undefined) {
-                translateY.value = withSpring(target, SPRING_CONFIG);
-                startY.value = target;
+                runOnUI(() => {
+                    'worklet';
+                    translateY.value = withSpring(target, SPRING_CONFIG);
+                    startY.value = target;
+                })();
             }
         }
     }));

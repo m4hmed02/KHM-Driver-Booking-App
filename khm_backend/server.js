@@ -54,12 +54,31 @@ io.on('connection', (socket) => {
   // ── Customer "I'm Coming" acknowledgement ────────────────────────────────────
   socket.on('customer_coming', (data) => {
     try {
-      const { bookingId, driverId } = data;
-      if (!driverId || !bookingId) return;
-      const driverSocketId = connectedUsers.get(driverId.toString());
-      if (driverSocketId) {
-        io.to(driverSocketId).emit('customer_coming', { bookingId });
+      const { bookingId, driverId, customerName } = data || {};
+      if (!bookingId) return;
+
+      const safeBookingId = bookingId.toString();
+      const payload = {
+        bookingId: safeBookingId,
+        customerName: customerName || 'Customer',
+      };
+
+      console.log(`🚶 [Socket] customer_coming: Booking ${safeBookingId}, Driver ${driverId}`);
+
+      // 1. Direct delivery to driver socket if found in connectedUsers
+      if (driverId) {
+        const safeDriverId = typeof driverId === 'object' && driverId._id ? driverId._id.toString() : driverId.toString();
+        const driverSocketId = connectedUsers.get(safeDriverId);
+        if (driverSocketId) {
+          io.to(driverSocketId).emit('customer_coming', payload);
+          console.log(`   -> Delivered directly to driver socket ${driverSocketId}`);
+        }
       }
+
+      // 2. Also broadcast to room (driver on active_ride always joins booking_${bookingId})
+      const room = `booking_${safeBookingId}`;
+      socket.to(room).emit('customer_coming', payload);
+      console.log(`   -> Broadcasted to room ${room}`);
     } catch (err) {
       console.error('[Socket] customer_coming error:', err.message);
     }

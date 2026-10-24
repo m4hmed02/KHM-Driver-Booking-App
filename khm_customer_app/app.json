@@ -8,7 +8,15 @@
     "scheme": "khmcustomerapp",
     "userInterfaceStyle": "automatic",
     "ios": {
-      "icon": "./assets/expo.icon"
+      "icon": "./assets/expo.icon",
+      "bundleIdentifier": "com.khm.customerapp",
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "KHM needs your location to find nearby drivers and track your ride.",
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "KHM needs your location to find nearby drivers and track your ride."
+      },
+      "config": {
+        "googleMapsApiKey": "AIzaSyBorjF-2cnNBw3DWN1uaQROLobmrmVFgk0"
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -35,6 +43,19 @@
         }
       ],
       "@react-native-community/datetimepicker",
+      [
+        "react-native-maps",
+        {
+          "androidGoogleMapsApiKey": "AIzaSyBorjF-2cnNBw3DWN1uaQROLobmrmVFgk0",
+          "iosGoogleMapsApiKey": "AIzaSyBorjF-2cnNBw3DWN1uaQROLobmrmVFgk0"
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "KHM needs your location to find nearby drivers and track your ride."
+        }
+      ],
       "expo-secure-store"
     ],
     "experiments": {

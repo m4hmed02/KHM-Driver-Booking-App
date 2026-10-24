@@ -371,6 +371,8 @@ export default function Home() {
     const [offeredBookingIds, setOfferedBookingIds] = useState<Set<string>>(new Set());
     const [selectedRide, setSelectedRide] = useState<Booking | null>(null);
     const [offerModalVisible, setOfferModalVisible] = useState(false);
+    // The single booking whose pickup pin is shown on the map (only after driver taps a card)
+    const [selectedMapRide, setSelectedMapRide] = useState<Booking | null>(null);
 
     // ── Scheduled (schedule_driver) state ────────────────────────────────────
     const [scheduledRides, setScheduledRides] = useState<Booking[]>([]);
@@ -500,6 +502,7 @@ export default function Home() {
                 if (cur?._id === id) { setOfferModalVisible(false); return null; }
                 return cur;
             });
+            setSelectedMapRide((cur) => (cur?._id === id ? null : cur));
             if (Platform.OS === 'android') {
                 ToastAndroid.showWithGravity('Customer cancelled the request.', ToastAndroid.LONG, ToastAndroid.BOTTOM);
             }
@@ -548,56 +551,57 @@ export default function Home() {
         } catch { /* GPS unavailable */ }
     }, []);
 
-    // ── Fit map to visible tab's markers ─────────────────────────────────────
-    const visibleRides = activeTab === 'now' ? nowRides : scheduledRides;
-    useEffect(() => {
-        if (visibleRides.length === 0 || !mapRef.current) return;
-        const coords = visibleRides.map((r) => ({
-            latitude: r.pickupLocation.latitude,
-            longitude: r.pickupLocation.longitude,
-        }));
-        if (driverRegion) coords.push({ latitude: driverRegion.latitude, longitude: driverRegion.longitude });
-        mapRef.current.fitToCoordinates(coords, {
-            edgePadding: { top: 80, right: 40, bottom: BOTTOM_SHEET_MIN_HEIGHT + 40, left: 40 },
-            animated: true,
-        });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [visibleRides]);
+    // When the driver taps a card, show that ride's marker and pan the map to it
+    const showRideOnMap = useCallback((ride: Booking) => {
+        setSelectedMapRide(ride);
+        const coord = {
+            latitude: ride.pickupLocation.latitude,
+            longitude: ride.pickupLocation.longitude,
+            latitudeDelta: 0.04,
+            longitudeDelta: 0.04,
+        };
+        mapRef.current?.animateToRegion(coord, 600);
+    }, []);
 
     // ── driver_now offer callbacks ────────────────────────────────────────────
     const handleMakeOffer = useCallback((booking: Booking) => {
+        showRideOnMap(booking);
         setSelectedRide(booking);
         setOfferModalVisible(true);
-    }, []);
+    }, [showRideOnMap]);
 
     const handleOfferSubmitted = useCallback((updatedBooking: Booking) => {
         setOfferedBookingIds((prev) => new Set([...prev, updatedBooking._id]));
         setOfferModalVisible(false);
         setSelectedRide(null);
+        setSelectedMapRide(null);
         if (Platform.OS === 'android') {
-            ToastAndroid.showWithGravity('✅ Offer sent! Waiting for customer response.', ToastAndroid.LONG, ToastAndroid.BOTTOM);
+            ToastAndroid.showWithGravity('Offer sent! Waiting for customer response.', ToastAndroid.LONG, ToastAndroid.BOTTOM);
         }
     }, []);
 
     const handleCloseModal = useCallback(() => {
         setOfferModalVisible(false);
         setSelectedRide(null);
+        setSelectedMapRide(null);
     }, []);
 
     // ── schedule_driver direct-accept ────────────────────────────────────────
     const handleAcceptScheduled = useCallback(async (booking: Booking) => {
+        showRideOnMap(booking);
         setAcceptingId(booking._id);
         try {
             const accepted = await acceptScheduledBookingApi(booking._id);
             // Remove from scheduled list and navigate to active ride
             setScheduledRides((prev) => prev.filter((r) => r._id !== booking._id));
+            setSelectedMapRide(null);
             router.push({ pathname: '/active_ride', params: { bookingId: accepted._id } });
         } catch (err) {
             Alert.alert('Could not accept', err instanceof Error ? err.message : 'Please try again.');
         } finally {
             setAcceptingId(null);
         }
-    }, [router]);
+    }, [router, showRideOnMap]);
 
     // ── Render helpers ────────────────────────────────────────────────────────
     const renderNowCard = useCallback(
@@ -664,21 +668,24 @@ export default function Home() {
                 showsMyLocationButton={false}
                 onRegionChangeComplete={() => { if (driverRegion !== null) setDriverRegion(null); }}
             >
-                {visibleRides.map((ride) => (
+                {/* Only show a marker for the ride the driver explicitly selected */}
+                {selectedMapRide && (
                     <Marker
-                        key={ride._id}
-                        coordinate={{ latitude: ride.pickupLocation.latitude, longitude: ride.pickupLocation.longitude }}
-                        onPress={() => activeTab === 'now' ? handleMakeOffer(ride) : handleAcceptScheduled(ride)}
+                        key={selectedMapRide._id}
+                        coordinate={{
+                            latitude: selectedMapRide.pickupLocation.latitude,
+                            longitude: selectedMapRide.pickupLocation.longitude,
+                        }}
                         tracksViewChanges={false}
                     >
                         <View style={styles.markerCallout}>
-                            <Text style={styles.markerFare}>{formatFare(ride.estimatedFare)}</Text>
+                            <Text style={styles.markerFare}>{formatFare(selectedMapRide.estimatedFare)}</Text>
                             <Text style={styles.markerAddress} numberOfLines={1}>
-                                {ride.pickupLocation.address.split(',')[0]}
+                                {selectedMapRide.pickupLocation.address.split(',')[0]}
                             </Text>
                         </View>
                     </Marker>
-                ))}
+                )}
             </MapView>
 
             {/* Header overlay */}

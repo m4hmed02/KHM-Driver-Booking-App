@@ -53,6 +53,20 @@ export const updateBookingStatusApi = async (
   }
 };
 
+// Cancel an active booking with an optional reason (works before and after starting ride)
+export const cancelBookingApi = async (bookingId: string, reason?: string): Promise<void> => {
+  const headers = await getAuthHeader();
+  try {
+    await axios.delete(`${API_URL}/bookings/${bookingId}`, {
+      headers,
+      data: reason ? { reason } : undefined,
+    });
+  } catch (error: any) {
+    const message = error.response?.data?.message || error.message || 'Failed to cancel booking';
+    throw new Error(message);
+  }
+};
+
 // Submit or update the driver's fare offer on a ride request
 export const makeDriverOfferApi = async (bookingId: string, fare: number): Promise<Booking> => {
   const headers = await getAuthHeader();

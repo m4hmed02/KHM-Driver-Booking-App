@@ -1,5 +1,14 @@
 import React, { useState } from 'react';
-import { View, TextInput, TouchableOpacity, Text, ScrollView, ActivityIndicator, Keyboard } from 'react-native';
+import {
+  View,
+  TextInput,
+  TouchableOpacity,
+  Text,
+  ScrollView,
+  ActivityIndicator,
+  Keyboard,
+  Platform,
+} from 'react-native';
 import { MaterialCommunityIcons, Ionicons } from '@expo/vector-icons';
 import { useStyles } from '../styles/locationinputcard.styles';
 import { useTheme } from '../hooks/use-theme';
@@ -76,52 +85,18 @@ export function LocationInputCard({
     }
   };
 
-  const renderSuggestions = (
-    suggestions: PlaceSuggestion[],
-    type: 'pickup' | 'dropoff',
-    isLoading: boolean
-  ) => {
-    if (focusedInput !== type) return null;
-    
-    if (isLoading) {
-      return (
-        <View style={{ padding: 12, alignItems: 'center' }}>
-          <ActivityIndicator size="small" color={theme.primary} />
-        </View>
-      );
-    }
+  const activeSuggestions =
+    focusedInput === 'pickup' ? pickupSuggestions :
+    focusedInput === 'dropoff' ? dropoffSuggestions : [];
+  const isActiveLoading =
+    focusedInput === 'pickup' ? isPickupLoading :
+    focusedInput === 'dropoff' ? isDropoffLoading : false;
 
-    if (suggestions.length === 0) return null;
-
-    return (
-      <View style={{ width: '100%' }}>
-        {suggestions.map((item) => (
-          <TouchableOpacity
-            key={item.placeId}
-            style={{
-              padding: 12,
-              borderBottomWidth: 1,
-              borderBottomColor: theme.border,
-            }}
-            onPress={() => handleSelectPlace(item, type)}
-          >
-            <Text style={{ fontSize: 14, color: theme.text, fontWeight: '500' }}>
-              {item.primaryText}
-            </Text>
-            {!!item.secondaryText && (
-              <Text style={{ fontSize: 12, color: theme.secondaryText, marginTop: 2 }}>
-                {item.secondaryText}
-              </Text>
-            )}
-          </TouchableOpacity>
-        ))}
-      </View>
-    );
-  };
+  const hasSuggestions = isActiveLoading || activeSuggestions.length > 0;
 
   return (
     <View style={styles.searchCard}>
-      {/* Pickup Location */}
+      {/* ── Pickup row ── */}
       <View style={styles.inputRow}>
         <View style={styles.iconContainer}>
           <MaterialCommunityIcons name="walk" size={20} color="#000000" />
@@ -132,6 +107,7 @@ export function LocationInputCard({
           placeholderTextColor={theme.secondaryText}
           value={pickupLocation}
           onChangeText={setPickupLocation}
+          returnKeyType="search"
           onFocus={() => {
             setFocusedInput('pickup');
             onInputFocus?.();
@@ -139,11 +115,15 @@ export function LocationInputCard({
           }}
         />
         {focusedInput === 'pickup' && (
-          <TouchableOpacity style={styles.mapButton} activeOpacity={0.7} onPress={() => {
-            Keyboard.dismiss();
-            setFocusedInput(null);
-            onFocusChange?.(null);
-          }}>
+          <TouchableOpacity
+            style={styles.mapButton}
+            activeOpacity={0.7}
+            onPress={() => {
+              Keyboard.dismiss();
+              setFocusedInput(null);
+              onFocusChange?.(null);
+            }}
+          >
             <Text style={styles.mapButtonText}>Done</Text>
           </TouchableOpacity>
         )}
@@ -151,7 +131,7 @@ export function LocationInputCard({
 
       <View style={styles.inputDivider} />
 
-      {/* Dropoff Location */}
+      {/* ── Dropoff row ── */}
       <View style={styles.inputRow}>
         <View style={styles.iconContainer}>
           <MaterialCommunityIcons name="flag-checkered" size={20} color="#1A1A1A" />
@@ -162,6 +142,7 @@ export function LocationInputCard({
           placeholderTextColor={theme.secondaryText}
           value={dropoffLocation}
           onChangeText={setDropoffLocation}
+          returnKeyType="search"
           onFocus={() => {
             setFocusedInput('dropoff');
             onInputFocus?.();
@@ -169,19 +150,86 @@ export function LocationInputCard({
           }}
         />
         {focusedInput === 'dropoff' && (
-          <TouchableOpacity style={styles.mapButton} activeOpacity={0.7} onPress={() => {
-            Keyboard.dismiss();
-            setFocusedInput(null);
-            onFocusChange?.(null);
-          }}>
+          <TouchableOpacity
+            style={styles.mapButton}
+            activeOpacity={0.7}
+            onPress={() => {
+              Keyboard.dismiss();
+              setFocusedInput(null);
+              onFocusChange?.(null);
+            }}
+          >
             <Text style={styles.mapButtonText}>Done</Text>
           </TouchableOpacity>
         )}
       </View>
 
-      {/* Render Suggestions for active input below both inputs */}
-      {renderSuggestions(pickupSuggestions, 'pickup', isPickupLoading)}
-      {renderSuggestions(dropoffSuggestions, 'dropoff', isDropoffLoading)}
+      {/* ── Suggestions list ── */}
+      {hasSuggestions && (
+        <View
+          style={{
+            marginTop: 4,
+            borderTopWidth: 1,
+            borderTopColor: theme.border,
+            // Cap height so the list itself scrolls — never covers the whole screen
+            maxHeight: 260,
+          }}
+        >
+          {isActiveLoading ? (
+            <View style={{ paddingVertical: 16, alignItems: 'center' }}>
+              <ActivityIndicator size="small" color={theme.primary} />
+            </View>
+          ) : (
+            <ScrollView
+              keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator={true}
+              nestedScrollEnabled={true}
+              bounces={false}
+            >
+              {activeSuggestions.map((item, index) => (
+                <TouchableOpacity
+                  key={item.placeId}
+                  style={{
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    gap: 12,
+                    paddingVertical: 12,
+                    paddingHorizontal: 14,
+                    borderBottomWidth: index < activeSuggestions.length - 1 ? 1 : 0,
+                    borderBottomColor: theme.border,
+                    backgroundColor: theme.background,
+                  }}
+                  activeOpacity={0.7}
+                  onPress={() => handleSelectPlace(item, focusedInput!)}
+                >
+                  <Ionicons
+                    name="location-outline"
+                    size={18}
+                    color={theme.secondaryText}
+                    style={{ marginTop: 1 }}
+                  />
+                  <View style={{ flex: 1 }}>
+                    <Text
+                      style={{ fontSize: 14, color: theme.text, fontWeight: '500' }}
+                      numberOfLines={1}
+                    >
+                      {item.primaryText}
+                    </Text>
+                    {!!item.secondaryText && (
+                      <Text
+                        style={{ fontSize: 12, color: theme.secondaryText, marginTop: 2 }}
+                        numberOfLines={1}
+                      >
+                        {item.secondaryText}
+                      </Text>
+                    )}
+                  </View>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          )}
+        </View>
+      )}
     </View>
   );
 }

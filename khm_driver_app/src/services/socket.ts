@@ -48,6 +48,7 @@ export interface BookingDeletedPayload {
 
 export interface CustomerComingPayload {
     bookingId: string;
+    customerName?: string;
 }
 
 export interface ChatMessagePayload {

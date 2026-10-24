@@ -13,26 +13,65 @@ exports.createBooking = async (customerId, bookingData) => {
   return booking;
 };
 
-exports.deleteBooking = async (bookingId, customerId) => {
+exports.deleteBooking = async (bookingId, userId, cancellationReason = null) => {
+  // If the booking is still requesting, delete it directly (customer only)
   const deletedBooking = await Booking.findOneAndDelete({
     _id: bookingId,
-    customer: customerId,
+    customer: userId,
     status: 'requesting',
   });
 
-  if (deletedBooking) return;
+  if (deletedBooking) {
+    return { deleted: true, booking: deletedBooking };
+  }
 
-  const existingBooking = await Booking.findById(bookingId).select('customer');
-  if (!existingBooking) return;
-
-  if (existingBooking.customer.toString() !== customerId.toString()) {
+  const existingBooking = await Booking.findById(bookingId);
+  if (!existingBooking) {
     const error = new Error('Booking not found');
     error.statusCode = 404;
     throw error;
   }
 
-  const error = new Error('Booking is no longer pending and cannot be deleted');
-  error.statusCode = 409;
+  const isCustomer = existingBooking.customer && existingBooking.customer.toString() === userId.toString();
+  const isDriver = existingBooking.driver && existingBooking.driver.toString() === userId.toString();
+
+  // Ensure only the customer or the assigned driver can cancel
+  if (!isCustomer && !isDriver) {
+    const error = new Error('Unauthorized or booking not found');
+    error.statusCode = 403;
+    throw error;
+  }
+
+  // Allow cancellation for 'accepted', 'arriving', and 'started' (works after starting ride)
+  if (['accepted', 'arriving', 'started'].includes(existingBooking.status)) {
+    existingBooking.status = 'cancelled';
+    existingBooking.expiresAt = null;
+    if (cancellationReason) {
+      existingBooking.cancellationReason = cancellationReason;
+    }
+    existingBooking.cancelledBy = isDriver ? 'driver' : 'customer';
+    existingBooking.cancelledAt = new Date();
+    await existingBooking.save();
+
+    const populated = await Booking.findById(bookingId)
+      .populate('driver', 'name phone avatar')
+      .populate('customer', 'name phone avatar');
+
+    return { deleted: false, booking: populated };
+  }
+
+  if (existingBooking.status === 'completed') {
+    const error = new Error('Trip is already completed and cannot be cancelled');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  if (existingBooking.status === 'cancelled') {
+    return { deleted: false, booking: existingBooking };
+  }
+
+  const error = new Error('Booking cannot be cancelled at this stage');
+  error.statusCode = 400;
   throw error;
 };
 

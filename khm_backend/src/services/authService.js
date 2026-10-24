@@ -9,25 +9,76 @@ const generateToken = (id) => {
 
 /**
  * Generates all common format variants of a phone number so users can login
- * regardless of whether they typed +971, 050, 50, spaces, etc.
+ * regardless of whether they typed +971, +92, 050, 0300, local digits, spaces, etc.
  */
 const getPhoneVariants = (phone) => {
   if (!phone) return [];
   const raw = phone.toString().trim();
   const cleaned = raw.replace(/[\s\-()]/g, '');
   const digitsOnly = cleaned.replace(/\D/g, '');
-  const localDigits = digitsOnly.length > 7 ? digitsOnly.slice(-9) : digitsOnly;
 
   const variants = new Set([
     raw,
     cleaned,
     digitsOnly,
     '+' + digitsOnly,
-    '0' + localDigits,
-    '+971' + localDigits.replace(/^0/, ''),
-    '971' + localDigits.replace(/^0/, ''),
-    localDigits.replace(/^0/, ''),
   ]);
+
+  // Pakistan (+92) handling: 10 local digits typically starting with 3
+  if (digitsOnly.startsWith('92') && digitsOnly.length >= 11) {
+    const pkLocal = digitsOnly.slice(2).replace(/^0+/, '');
+    variants.add('+92' + pkLocal);
+    variants.add('92' + pkLocal);
+    variants.add('0' + pkLocal);
+    variants.add(pkLocal);
+  } else if (digitsOnly.startsWith('03') && digitsOnly.length === 11) {
+    const pkLocal = digitsOnly.slice(1);
+    variants.add('+92' + pkLocal);
+    variants.add('92' + pkLocal);
+    variants.add('0' + pkLocal);
+    variants.add(pkLocal);
+  } else if (digitsOnly.startsWith('3') && digitsOnly.length === 10) {
+    const pkLocal = digitsOnly;
+    variants.add('+92' + pkLocal);
+    variants.add('92' + pkLocal);
+    variants.add('0' + pkLocal);
+    variants.add(pkLocal);
+  }
+
+  // UAE (+971) handling: 9 local digits typically starting with 5
+  if (digitsOnly.startsWith('971') && digitsOnly.length >= 10) {
+    const uaeLocal = digitsOnly.slice(3).replace(/^0+/, '');
+    variants.add('+971' + uaeLocal);
+    variants.add('971' + uaeLocal);
+    variants.add('0' + uaeLocal);
+    variants.add(uaeLocal);
+  } else if (digitsOnly.startsWith('05') && digitsOnly.length === 10) {
+    const uaeLocal = digitsOnly.slice(1);
+    variants.add('+971' + uaeLocal);
+    variants.add('971' + uaeLocal);
+    variants.add('0' + uaeLocal);
+    variants.add(uaeLocal);
+  } else if (digitsOnly.startsWith('5') && digitsOnly.length === 9) {
+    const uaeLocal = digitsOnly;
+    variants.add('+971' + uaeLocal);
+    variants.add('971' + uaeLocal);
+    variants.add('0' + uaeLocal);
+    variants.add(uaeLocal);
+  }
+
+  // Fallback suffixes
+  if (digitsOnly.length >= 9) {
+    const last9 = digitsOnly.slice(-9);
+    variants.add(last9);
+    variants.add('0' + last9);
+    variants.add('+971' + last9);
+  }
+  if (digitsOnly.length >= 10) {
+    const last10 = digitsOnly.slice(-10);
+    variants.add(last10);
+    variants.add('0' + last10);
+    variants.add('+92' + last10);
+  }
 
   return Array.from(variants).filter(Boolean);
 };

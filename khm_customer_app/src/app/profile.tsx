@@ -6,32 +6,42 @@ import { useRouter } from 'expo-router';
 import { styles } from '../styles/profile.styles';
 import { Colors } from '../constants/theme';
 import { useAuth } from '../context/AuthContext';
+import { disconnectSocket } from '../services/socket';
 
 export default function Profile() {
   const router = useRouter();
   const { user, isLoading, logout } = useAuth();
 
-  // 1. Add local state to manage the logout loading spinner
   const [isLoggingOut, setIsLoggingOut] = useState(false);
 
-  const handleLogout = async () => {
-    setIsLoggingOut(true); // Start spinner
-    try {
-      await logout(); // Clears user state and SecureStore
-
-      // 2. Clear the entire navigation history stack before replacing the route
-      if (router.canDismiss()) {
-        router.dismissAll();
-      }
-      router.replace('/login');
-
-    } catch (error) {
-      Alert.alert('Error', 'Failed to log out properly.');
-      setIsLoggingOut(false); // Stop spinner if it fails
-    }
+  const handleLogout = () => {
+    Alert.alert(
+      'Logout',
+      'Are you sure you want to logout?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Logout',
+          style: 'destructive',
+          onPress: async () => {
+            setIsLoggingOut(true);
+            try {
+              // Disconnect socket first so no stale listeners remain
+              disconnectSocket();
+              await logout(); // Clears user state and SecureStore
+              router.replace('/login');
+            } catch (error) {
+              Alert.alert('Error', 'Failed to log out properly.');
+              setIsLoggingOut(false);
+            }
+          },
+        },
+      ]
+    );
   };
 
-  // 3. Show spinner if context is loading OR if user is logging out
+  // Show spinner if context is loading OR if user is logging out
+
   if (isLoading || isLoggingOut) {
     return (
       <View style={[styles.container, { justifyContent: 'center', alignItems: 'center' }]}>

@@ -122,9 +122,9 @@ export const getSocket = (): Socket<ServerToClientEvents> | null => socket;
 /**
  * Tell the driver "I'm Coming" after they arrive at the pickup.
  */
-export const emitCustomerComing = (bookingId: string, driverId: string): void => {
+export const emitCustomerComing = (bookingId: string, driverId: string, customerName?: string): void => {
     if (!socket?.connected) return;
-    socket.emit('customer_coming' as any, { bookingId, driverId });
+    socket.emit('customer_coming' as any, { bookingId, driverId, customerName });
 };
 
 /**

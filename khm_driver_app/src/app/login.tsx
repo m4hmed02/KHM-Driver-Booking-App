@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import {
   View,
   Text,
@@ -13,11 +13,15 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
 import { useStyles } from '../styles/index.styles';
-import { useRouter } from 'expo-router';
+import { useRouter, useFocusEffect } from 'expo-router';
 import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../hooks/use-theme';
 import { Ionicons } from '@expo/vector-icons';
 import { resendOtpApi } from '../services/apis/auth/authService';
+import PhoneInputWithCountry, {
+  CountryCode,
+  validatePhone,
+} from '../components/PhoneInputWithCountry';
 
 export default function LoginScreen() {
   const styles = useStyles();
@@ -26,7 +30,9 @@ export default function LoginScreen() {
   const { login, verifyLoginOtp } = useAuth();
 
   const [step, setStep] = useState<'credentials' | 'otp'>('credentials');
-  const [phone, setPhone] = useState('');
+  const [countryCode, setCountryCode] = useState<CountryCode>('+971');
+  const [phoneDigits, setPhoneDigits] = useState('');
+  const [fullPhone, setFullPhone] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [otp, setOtp] = useState('');
@@ -35,6 +41,26 @@ export default function LoginScreen() {
   const [countdown, setCountdown] = useState(0);
 
   const timerRef = useRef<any>(null);
+
+  // Reset all fields every time this screen is focused so that after logout
+  // the driver always lands on the credentials step with blank fields.
+  useFocusEffect(
+    useCallback(() => {
+      setStep('credentials');
+      setCountryCode('+971');
+      setPhoneDigits('');
+      setFullPhone('');
+      setPassword('');
+      setShowPassword(false);
+      setOtp('');
+      setLoading(false);
+      setResending(false);
+      setCountdown(0);
+      if (timerRef.current) {
+        clearTimeout(timerRef.current);
+      }
+    }, [])
+  );
 
   useEffect(() => {
     if (countdown > 0) {
@@ -49,15 +75,22 @@ export default function LoginScreen() {
 
   // Step 1: Send credentials and request OTP
   const handleRequestLoginOtp = async () => {
-    if (!phone.trim() || !password) {
-      Alert.alert('Error', 'Please enter both phone number and password');
+    const validation = validatePhone(phoneDigits, countryCode);
+    if (!validation.isValid) {
+      Alert.alert('Phone Required', validation.error);
+      return;
+    }
+    if (!password) {
+      Alert.alert('Password Required', 'Please enter your password.');
       return;
     }
 
+    const targetPhone = validation.fullNumber;
+    setFullPhone(targetPhone);
     setLoading(true);
     try {
-      console.log('[DriverLogin] Submitting login request for phone:', phone.trim());
-      const res = await login({ phone: phone.trim(), password });
+      console.log('[DriverLogin] Submitting login request for phone:', targetPhone);
+      const res = await login({ phone: targetPhone, password });
       console.log('[DriverLogin] Received response:', res);
       if (res.otpRequired) {
         setStep('otp');
@@ -92,8 +125,8 @@ export default function LoginScreen() {
 
     setLoading(true);
     try {
-      console.log('[DriverLogin] Verifying OTP:', otp.trim(), 'for phone:', phone.trim());
-      await verifyLoginOtp(phone.trim(), otp.trim());
+      console.log('[DriverLogin] Verifying OTP:', otp.trim(), 'for phone:', fullPhone);
+      await verifyLoginOtp(fullPhone, otp.trim());
       console.log('[DriverLogin] OTP verified successfully, redirecting to /home');
       router.replace('/home');
     } catch (error: any) {
@@ -109,7 +142,7 @@ export default function LoginScreen() {
     if (countdown > 0) return;
     setResending(true);
     try {
-      await resendOtpApi(phone.trim(), 'login');
+      await resendOtpApi(fullPhone, 'login');
       setCountdown(30);
       Alert.alert('OTP Resent', 'A new verification code has been printed to the backend terminal.');
     } catch (error: any) {
@@ -139,26 +172,20 @@ export default function LoginScreen() {
               <Text style={styles.title}>Welcome Captain</Text>
               <Text style={styles.subtitle}>Enter your details to continue</Text>
 
-              {/* Phone Input */}
-              <View style={styles.inputContainer}>
-                <TouchableOpacity style={styles.countryCodeSelector}>
-                  <Text style={styles.countryCodeText}>+971</Text>
-                  <Text style={styles.dropdownIcon}>▼</Text>
-                </TouchableOpacity>
-                <View style={styles.divider} />
-                <TextInput
-                  style={styles.input}
-                  placeholder="50 123 4567"
-                  keyboardType="phone-pad"
-                  placeholderTextColor="#999"
-                  value={phone}
-                  onChangeText={setPhone}
-                  autoCapitalize="none"
-                />
-              </View>
+              {/* Phone Input with Country Dropdown */}
+              <PhoneInputWithCountry
+                countryCode={countryCode}
+                onCountryChange={setCountryCode}
+                rawDigits={phoneDigits}
+                onChangeDigits={(digits, full) => {
+                  setPhoneDigits(digits);
+                  setFullPhone(full);
+                }}
+                variant="login"
+              />
 
               {/* Password Input */}
-              <View style={[styles.inputContainer, { marginTop: 15, flexDirection: 'row', alignItems: 'center' }]}>
+              <View style={[styles.inputContainer, { marginTop: 0, flexDirection: 'row', alignItems: 'center' }]}>
                 <TextInput
                   style={[styles.input, { flex: 1 }]}
                   placeholder="Password"
@@ -211,7 +238,7 @@ export default function LoginScreen() {
               {/* Heading */}
               <Text style={styles.title}>Verify Code</Text>
               <Text style={[styles.subtitle, { textAlign: 'center', marginBottom: 16 }]}>
-                Enter the 6-digit verification code sent for {phone}
+                Enter the 6-digit verification code sent for {fullPhone || phoneDigits}
               </Text>
 
               {/* Terminal Notice Banner */}

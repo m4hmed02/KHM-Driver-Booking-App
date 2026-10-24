@@ -124,8 +124,58 @@ exports.getMyBookings = async (req, res) => {
 
 exports.deleteBooking = async (req, res) => {
   try {
-    await bookingService.deleteBooking(req.params.id, req.user.id);
-    res.status(204).end();
+    const bookingId = req.params.id;
+    const reason = req.body?.reason || req.query?.reason || null;
+    const result = await bookingService.deleteBooking(bookingId, req.user.id, reason);
+
+    const io = req.app.get('io');
+    const connectedUsers = req.app.get('connectedUsers');
+
+    const booking = result?.booking;
+    const customerId = booking?.customer?._id
+      ? booking.customer._id.toString()
+      : (booking?.customer ? booking.customer.toString() : null);
+    const driverId = booking?.driver?._id
+      ? booking.driver._id.toString()
+      : (booking?.driver ? booking.driver.toString() : null);
+
+    const cancelledBy = booking?.cancelledBy || (req.user.id.toString() === driverId ? 'driver' : 'customer');
+
+    const cancelPayload = {
+      _id: bookingId,
+      bookingId,
+      reason,
+      cancellationReason: reason,
+      cancelledBy,
+      status: 'cancelled',
+    };
+
+    // Broadcast to ALL drivers so they remove this request from their pending feed
+    io.emit('booking_cancelled', cancelPayload);
+
+    // Broadcast to the booking room
+    io.to(`booking_${bookingId}`).emit('booking_cancelled', cancelPayload);
+    io.to(`booking_${bookingId}`).emit('booking_status_updated', cancelPayload);
+
+    // Notify the driver directly
+    if (driverId && connectedUsers) {
+      const driverSocketId = connectedUsers.get(driverId);
+      if (driverSocketId) {
+        io.to(driverSocketId).emit('booking_cancelled', cancelPayload);
+        io.to(driverSocketId).emit('booking_status_updated', cancelPayload);
+      }
+    }
+
+    // Notify the customer directly
+    if (customerId && connectedUsers) {
+      const customerSocketId = connectedUsers.get(customerId);
+      if (customerSocketId) {
+        io.to(customerSocketId).emit('booking_cancelled', cancelPayload);
+        io.to(customerSocketId).emit('booking_status_updated', cancelPayload);
+      }
+    }
+
+    res.status(200).json({ success: true, message: 'Booking cancelled successfully', booking });
   } catch (error) {
     res.status(error.statusCode || 500).json({ message: error.message });
   }
@@ -158,6 +208,28 @@ exports.updateBookingStatus = async (req, res) => {
       const driverSocketId = connectedUsers.get(driverId);
       if (driverSocketId && req.body.status === 'completed') {
         io.to(driverSocketId).emit('booking_status_updated', payload);
+      }
+    }
+
+    // If the ride is cancelled via status update, notify both parties
+    if (req.body.status === 'cancelled') {
+      const cancelPayload = {
+        _id: req.params.id,
+        bookingId: req.params.id,
+        status: 'cancelled',
+        cancellationReason: req.body.reason || null,
+        cancelledBy: req.user.id.toString() === driverId ? 'driver' : 'customer',
+      };
+      if (customerSocketId) {
+        io.to(customerSocketId).emit('booking_status_updated', cancelPayload);
+        io.to(customerSocketId).emit('booking_cancelled', cancelPayload);
+      }
+      if (driverId && connectedUsers) {
+        const driverSocketId = connectedUsers.get(driverId);
+        if (driverSocketId) {
+          io.to(driverSocketId).emit('booking_status_updated', cancelPayload);
+          io.to(driverSocketId).emit('booking_cancelled', cancelPayload);
+        }
       }
     }
 

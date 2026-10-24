@@ -9,7 +9,9 @@ import {
   Platform,
   Alert,
   ActivityIndicator,
-  StyleSheet
+  Animated,
+  Easing,
+  StyleSheet,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
@@ -19,7 +21,15 @@ import { Ionicons } from '@expo/vector-icons';
 import { styles } from '../styles/signup.styles';
 import { Colors } from '../constants/theme';
 import { useAuth } from '../context/AuthContext';
-import { sendRegisterOtpApi, resendOtpApi } from '../services/apis/auth/authService';
+import {
+  sendRegisterOtpApi,
+  verifyRegisterOtpApi,
+  resendOtpApi,
+} from '../services/apis/auth/authService';
+import PhoneInputWithCountry, {
+  CountryCode,
+  validatePhone,
+} from '../components/PhoneInputWithCountry';
 
 type FocusedField =
   | 'name'
@@ -34,15 +44,17 @@ export default function Signup() {
   const router = useRouter();
   const { register } = useAuth();
 
-  // Form state
-  const [step, setStep] = useState<'form' | 'otp'>('form');
+  // Form state — 3-step wizard matching driver app
+  const [step, setStep] = useState<1 | 2 | 3>(1);
   const [avatarUri, setAvatarUri] = useState<string | null>(null);
   const [name, setName] = useState('');
-  const [phone, setPhone] = useState('');
+  const [countryCode, setCountryCode] = useState<CountryCode>('+971');
+  const [phoneDigits, setPhoneDigits] = useState('');
+  const [fullPhone, setFullPhone] = useState('');
   const [email, setEmail] = useState('');
+  const [otp, setOtp] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
-  const [otp, setOtp] = useState('');
 
   // UI state
   const [focusedField, setFocusedField] = useState<FocusedField>(null);
@@ -64,6 +76,28 @@ export default function Signup() {
       if (timerRef.current) clearTimeout(timerRef.current);
     };
   }, [countdown]);
+
+  // Animation values for smooth step transitions
+  const fadeAnim = useRef(new Animated.Value(0)).current;
+  const translateYAnim = useRef(new Animated.Value(20)).current;
+
+  useEffect(() => {
+    fadeAnim.setValue(0);
+    translateYAnim.setValue(20);
+    Animated.parallel([
+      Animated.timing(fadeAnim, {
+        toValue: 1,
+        duration: 380,
+        useNativeDriver: true,
+      }),
+      Animated.timing(translateYAnim, {
+        toValue: 0,
+        duration: 380,
+        easing: Easing.out(Easing.ease),
+        useNativeDriver: true,
+      }),
+    ]).start();
+  }, [step]);
 
   // ─── Avatar Picker ──────────────────────────────────────────────────────────
   const pickAvatar = useCallback(async () => {
@@ -88,50 +122,41 @@ export default function Signup() {
     }
   }, []);
 
-  // ─── Step 1: Validate Details and Send Registration OTP ─────────────────────
-  const handleRequestOtp = useCallback(async () => {
+  // ─── Step 1 -> Step 2: Validate details & send real OTP ──────────────────────
+  const handleNextStep1 = async () => {
     if (!name.trim()) {
       Alert.alert('Required', 'Please enter your full name.');
       return;
     }
-    if (!phone.trim()) {
-      Alert.alert('Required', 'Please enter your phone number.');
-      return;
-    }
-    if (!password) {
-      Alert.alert('Required', 'Please enter a password.');
-      return;
-    }
-    if (password.length < 6) {
-      Alert.alert('Weak password', 'Password must be at least 6 characters.');
-      return;
-    }
-    if (password !== confirmPassword) {
-      Alert.alert('Mismatch', 'Passwords do not match.');
+    const phoneVal = validatePhone(phoneDigits, countryCode);
+    if (!phoneVal.isValid) {
+      Alert.alert('Phone Required', phoneVal.error);
       return;
     }
 
+    const targetPhone = phoneVal.fullNumber;
+    setFullPhone(targetPhone);
     setIsLoading(true);
     try {
-      console.log('[CustomerSignup] Sending register OTP request for phone:', phone.trim());
+      console.log('[CustomerSignup] Sending register OTP request for phone:', targetPhone);
       await sendRegisterOtpApi({
-        phone: phone.trim(),
+        phone: targetPhone,
         email: email.trim() || undefined,
       });
       console.log('[CustomerSignup] Register OTP sent successfully');
-      setStep('otp');
+      setStep(2);
       setOtp('');
       setCountdown(30);
     } catch (error: any) {
       console.error('[CustomerSignup] Send register OTP error:', error?.message || error);
-      Alert.alert('Registration Error', error.message || 'Failed to send OTP.');
+      Alert.alert('Validation Error', error.message || 'Failed to send OTP.');
     } finally {
       setIsLoading(false);
     }
-  }, [name, phone, email, password, confirmPassword]);
+  };
 
-  // ─── Step 2: Verify OTP and Register ────────────────────────────────────────
-  const handleCompleteRegistration = useCallback(async () => {
+  // ─── Step 2 -> Step 3: Verify OTP ───────────────────────────────────────────
+  const handleNextStep2 = async () => {
     if (!otp.trim()) {
       Alert.alert('Required', 'Please enter the 6-digit OTP code.');
       return;
@@ -141,14 +166,63 @@ export default function Signup() {
       return;
     }
 
+    const targetPhone = fullPhone || `${countryCode}${phoneDigits}`;
+    setIsLoading(true);
+    try {
+      console.log('[CustomerSignup] Verifying OTP step 2:', otp.trim());
+      await verifyRegisterOtpApi({
+        phone: targetPhone,
+        otp: otp.trim(),
+      });
+      console.log('[CustomerSignup] OTP step 2 verified successfully');
+      setStep(3);
+    } catch (error: any) {
+      console.error('[CustomerSignup] OTP step 2 error:', error?.message || error);
+      Alert.alert('Verification Failed', error.message || 'Invalid or expired OTP.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // ─── Resend OTP ─────────────────────────────────────────────────────────────
+  const handleResendOtp = async () => {
+    if (countdown > 0) return;
+    setResending(true);
+    try {
+      await resendOtpApi(fullPhone || `${countryCode}${phoneDigits}`, 'register');
+      setCountdown(30);
+      Alert.alert('OTP Resent', 'A new verification code has been printed to the backend terminal.');
+    } catch (error: any) {
+      Alert.alert('Error', error.message || 'Failed to resend OTP.');
+    } finally {
+      setResending(false);
+    }
+  };
+
+  // ─── Step 3: Complete Customer Registration ─────────────────────────────────
+  const handleSignup = useCallback(async () => {
+    if (!password) {
+      Alert.alert('Required', 'Please enter a password.');
+      return;
+    }
+    if (password.length < 6) {
+      Alert.alert('Weak password', 'Password must be at least 6 characters.');
+      return;
+    }
+    if (confirmPassword && password !== confirmPassword) {
+      Alert.alert('Mismatch', 'Passwords do not match.');
+      return;
+    }
+
     setIsLoading(true);
     try {
       console.log('[CustomerSignup] Completing registration with OTP:', otp.trim());
       const payload = {
         name: name.trim(),
-        phone: phone.trim(),
+        phone: fullPhone || `${countryCode}${phoneDigits}`,
         email: email.trim(),
         password,
+        role: 'customer',
         otp: otp.trim(),
         avatar: avatarUri
           ? {
@@ -169,29 +243,14 @@ export default function Signup() {
         },
       ]);
     } catch (error: any) {
-      console.error('[CustomerSignup] Complete registration error:', error?.message || error);
+      console.error('[CustomerSignup] Registration error:', error?.message || error);
       Alert.alert('Registration Failed', error.message || 'Something went wrong.');
     } finally {
       setIsLoading(false);
     }
-  }, [name, phone, email, password, otp, avatarUri, register, router]);
+  }, [name, fullPhone, countryCode, phoneDigits, email, password, confirmPassword, otp, avatarUri, register, router]);
 
-  // Resend OTP
-  const handleResendOtp = async () => {
-    if (countdown > 0) return;
-    setResending(true);
-    try {
-      await resendOtpApi(phone.trim(), 'register');
-      setCountdown(30);
-      Alert.alert('OTP Resent', 'A new verification code has been printed to the backend terminal.');
-    } catch (error: any) {
-      Alert.alert('Error', error.message || 'Failed to resend OTP.');
-    } finally {
-      setResending(false);
-    }
-  };
-
-  // ─── Helpers 
+  // ─── Helpers ────────────────────────────────────────────────────────────────
   const rowStyle = (field: FocusedField) =>
     focusedField === field
       ? [styles.inputRow, styles.inputRowFocused]
@@ -204,45 +263,58 @@ export default function Signup() {
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       >
         <ScrollView
-          contentContainerStyle={styles.scrollContent}
+          contentContainerStyle={[styles.scrollContent, { flexGrow: 1, justifyContent: 'center' }]}
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
         >
-          {step === 'form' ? (
-            <>
-              {/* ── Header ── */}
-              <View style={styles.header}>
-                <Text style={styles.title}>Create Account</Text>
-                <Text style={styles.subtitle}>
-                  Join KHM and start booking rides
-                </Text>
-              </View>
+          {/* ── Step Progress Indicator ── */}
+          <View style={stepBarStyles.progressContainer}>
+            <View style={[stepBarStyles.progressStep, step >= 1 && stepBarStyles.progressStepActive]} />
+            <View style={[stepBarStyles.progressStep, step >= 2 && stepBarStyles.progressStepActive]} />
+            <View style={[stepBarStyles.progressStep, step >= 3 && stepBarStyles.progressStepActive]} />
+          </View>
 
-              {/* ── Avatar ── */}
-              <View style={styles.avatarSection}>
-                <TouchableOpacity
-                  onPress={pickAvatar}
-                  style={styles.avatarWrapper}
-                  activeOpacity={0.8}
-                  disabled={isLoading}
-                >
-                  {avatarUri ? (
-                    <Image
-                      source={{ uri: avatarUri }}
-                      style={styles.avatarImage}
-                      contentFit="cover"
-                    />
-                  ) : (
-                    <Ionicons name="camera-outline" size={36} color={Colors.light.primary} />
-                  )}
-                </TouchableOpacity>
-                <Text style={styles.avatarLabel}>
-                  {avatarUri ? 'Change photo' : 'Add profile photo'}
-                </Text>
-              </View>
+          {/* ── Header ── */}
+          <View style={styles.header}>
+            <Text style={styles.title}>
+              {step === 1 ? 'Customer Account' : step === 2 ? 'Verify Phone' : 'Secure Account'}
+            </Text>
+            <Text style={styles.subtitle}>
+              {step === 1
+                ? 'Join KHM Ride Booking'
+                : step === 2
+                ? `Enter the OTP sent for ${fullPhone || phoneDigits}`
+                : 'Create your account password'}
+            </Text>
+          </View>
 
-              {/* ── Form ── */}
+          <Animated.View style={{ opacity: fadeAnim, transform: [{ translateY: translateYAnim }] }}>
+            {/* ── Step 1: Profile & Details ── */}
+            {step === 1 && (
               <View style={styles.form}>
+                {/* ── Avatar ── */}
+                <View style={styles.avatarSection}>
+                  <TouchableOpacity
+                    onPress={pickAvatar}
+                    style={styles.avatarWrapper}
+                    activeOpacity={0.8}
+                    disabled={isLoading}
+                  >
+                    {avatarUri ? (
+                      <Image
+                        source={{ uri: avatarUri }}
+                        style={styles.avatarImage}
+                        contentFit="cover"
+                      />
+                    ) : (
+                      <Ionicons name="camera-outline" size={36} color={Colors.light.primary} />
+                    )}
+                  </TouchableOpacity>
+                  <Text style={styles.avatarLabel}>
+                    {avatarUri ? 'Change photo' : 'Add profile photo'}
+                  </Text>
+                </View>
+
                 {/* Full Name */}
                 <View style={styles.fieldWrapper}>
                   <Text style={styles.label}>
@@ -270,23 +342,119 @@ export default function Signup() {
                   <Text style={styles.label}>
                     Phone Number <Text style={styles.requiredStar}>*</Text>
                   </Text>
-                  <View style={rowStyle('phone')}>
-                    <Ionicons name="call-outline" size={20} color={Colors.light.secondaryText} style={styles.inputIcon as any} />
+                  <PhoneInputWithCountry
+                    countryCode={countryCode}
+                    onCountryChange={setCountryCode}
+                    rawDigits={phoneDigits}
+                    onChangeDigits={(digits, full) => {
+                      setPhoneDigits(digits);
+                      setFullPhone(full);
+                    }}
+                    variant="signup"
+                    editable={!isLoading}
+                    isFocused={focusedField === 'phone'}
+                    onFocus={() => setFocusedField('phone')}
+                    onBlur={() => setFocusedField(null)}
+                  />
+                </View>
+
+                <TouchableOpacity
+                  style={[styles.submitButton, isLoading && { opacity: 0.7 }]}
+                  onPress={handleNextStep1}
+                  activeOpacity={0.85}
+                  disabled={isLoading}
+                >
+                  {isLoading ? (
+                    <ActivityIndicator color="#ffffff" />
+                  ) : (
+                    <Text style={styles.submitButtonText}>Next</Text>
+                  )}
+                </TouchableOpacity>
+              </View>
+            )}
+
+            {/* ── Step 2: Real Terminal OTP Verification ── */}
+            {step === 2 && (
+              <View style={styles.form}>
+                {/* Terminal Notice Card */}
+                <View style={otpStyles.noticeCard}>
+                  <Ionicons name="terminal-outline" size={22} color="#15803d" style={{ marginRight: 8 }} />
+                  <View style={{ flex: 1 }}>
+                    <Text style={otpStyles.noticeTitle}>Backend Terminal OTP</Text>
+                    <Text style={otpStyles.noticeBody}>
+                      Please check your backend server terminal to view the generated OTP code.
+                    </Text>
+                  </View>
+                </View>
+
+                <View style={styles.fieldWrapper}>
+                  <Text style={styles.label}>
+                    Enter 6-Digit OTP <Text style={styles.requiredStar}>*</Text>
+                  </Text>
+                  <View style={rowStyle('otp')}>
+                    <Ionicons name="keypad-outline" size={20} color={Colors.light.secondaryText} style={styles.inputIcon as any} />
                     <TextInput
-                      style={styles.input}
-                      placeholder="+971 50 123 4567"
+                      style={[styles.input, otpStyles.otpInput]}
+                      placeholder="• • • • • •"
                       placeholderTextColor="#AAAAAA"
-                      value={phone}
-                      onChangeText={setPhone}
-                      keyboardType="phone-pad"
-                      returnKeyType="next"
-                      onFocus={() => setFocusedField('phone')}
+                      value={otp}
+                      onChangeText={setOtp}
+                      keyboardType="number-pad"
+                      maxLength={6}
+                      autoFocus
+                      returnKeyType="done"
+                      onSubmitEditing={handleNextStep2}
+                      onFocus={() => setFocusedField('otp')}
                       onBlur={() => setFocusedField(null)}
                       editable={!isLoading}
                     />
                   </View>
                 </View>
 
+                <TouchableOpacity
+                  style={[styles.submitButton, (isLoading || otp.length < 6) && { opacity: 0.7 }]}
+                  onPress={handleNextStep2}
+                  activeOpacity={0.85}
+                  disabled={isLoading || otp.length < 6}
+                >
+                  {isLoading ? (
+                    <ActivityIndicator color="#ffffff" />
+                  ) : (
+                    <Text style={styles.submitButtonText}>Verify & Next</Text>
+                  )}
+                </TouchableOpacity>
+
+                {/* Resend OTP */}
+                <View style={{ flexDirection: 'row', justifyContent: 'center', alignItems: 'center', marginTop: 14 }}>
+                  <Text style={{ color: Colors.light.secondaryText, fontSize: 14 }}>Didn't receive code? </Text>
+                  {resending ? (
+                    <ActivityIndicator size="small" color={Colors.light.primary} />
+                  ) : countdown > 0 ? (
+                    <Text style={{ color: Colors.light.primary, fontWeight: '600', fontSize: 14 }}>
+                      Resend in {countdown}s
+                    </Text>
+                  ) : (
+                    <TouchableOpacity onPress={handleResendOtp}>
+                      <Text style={{ color: Colors.light.primary, fontWeight: '700', fontSize: 14 }}>
+                        Resend Code
+                      </Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
+
+                <TouchableOpacity
+                  style={{ marginTop: 16, alignItems: 'center' }}
+                  onPress={() => setStep(1)}
+                  disabled={isLoading}
+                >
+                  <Text style={{ color: Colors.light.primary, fontSize: 14 }}>← Back to details</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+
+            {/* ── Step 3: Password & Register ── */}
+            {step === 3 && (
+              <View style={styles.form}>
                 {/* Email */}
                 <View style={styles.fieldWrapper}>
                   <Text style={styles.label}>
@@ -302,8 +470,6 @@ export default function Signup() {
                       onChangeText={setEmail}
                       keyboardType="email-address"
                       autoCapitalize="none"
-                      autoCorrect={false}
-                      returnKeyType="next"
                       onFocus={() => setFocusedField('email')}
                       onBlur={() => setFocusedField(null)}
                       editable={!isLoading}
@@ -356,7 +522,7 @@ export default function Signup() {
                       onChangeText={setConfirmPassword}
                       secureTextEntry={!showConfirmPassword}
                       returnKeyType="done"
-                      onSubmitEditing={handleRequestOtp}
+                      onSubmitEditing={handleSignup}
                       onFocus={() => setFocusedField('confirmPassword')}
                       onBlur={() => setFocusedField(null)}
                       editable={!isLoading}
@@ -375,127 +541,71 @@ export default function Signup() {
                 {/* Submit */}
                 <TouchableOpacity
                   style={[styles.submitButton, isLoading && { opacity: 0.7 }]}
-                  onPress={handleRequestOtp}
+                  onPress={handleSignup}
                   activeOpacity={0.85}
                   disabled={isLoading}
                 >
                   {isLoading ? (
                     <ActivityIndicator color="#ffffff" />
                   ) : (
-                    <Text style={styles.submitButtonText}>Continue</Text>
+                    <Text style={styles.submitButtonText}>Create Customer Account</Text>
                   )}
                 </TouchableOpacity>
-              </View>
-
-              {/* ── Footer ── */}
-              <View style={styles.footer}>
-                <Text style={styles.footerText}>Already have an account?</Text>
+                
                 <TouchableOpacity
-                  onPress={() => {
-                    if (router.canGoBack()) {
-                      router.back();
-                    } else {
-                      router.replace('/login');
-                    }
-                  }}
+                  style={{ marginTop: 16, alignItems: 'center' }}
+                  onPress={() => setStep(2)}
                   disabled={isLoading}
                 >
-                  <Text style={styles.footerLink}>Log in</Text>
+                  <Text style={{ color: Colors.light.primary, fontSize: 14 }}>← Back to OTP</Text>
                 </TouchableOpacity>
               </View>
-            </>
-          ) : (
-            <>
-              {/* ── OTP Verification Step ── */}
-              <View style={styles.header}>
-                <Text style={styles.title}>Verify Phone</Text>
-                <Text style={styles.subtitle}>
-                  Enter the 6-digit verification code sent for {phone}
-                </Text>
-              </View>
+            )}
+          </Animated.View>
 
-              {/* Terminal Notice Card */}
-              <View style={otpStyles.noticeCard}>
-                <Ionicons name="terminal-outline" size={24} color="#15803d" style={{ marginRight: 10 }} />
-                <View style={{ flex: 1 }}>
-                  <Text style={otpStyles.noticeTitle}>Backend Terminal OTP</Text>
-                  <Text style={otpStyles.noticeBody}>
-                    Your registration verification OTP has been printed to the backend terminal console.
-                  </Text>
-                </View>
-              </View>
-
-              <View style={styles.form}>
-                <View style={styles.fieldWrapper}>
-                  <Text style={styles.label}>
-                    Verification Code <Text style={styles.requiredStar}>*</Text>
-                  </Text>
-                  <View style={rowStyle('otp')}>
-                    <Ionicons name="keypad-outline" size={20} color={Colors.light.secondaryText} style={styles.inputIcon as any} />
-                    <TextInput
-                      style={[styles.input, otpStyles.otpInput]}
-                      placeholder="• • • • • •"
-                      placeholderTextColor="#AAAAAA"
-                      value={otp}
-                      onChangeText={setOtp}
-                      keyboardType="number-pad"
-                      maxLength={6}
-                      autoFocus
-                      onFocus={() => setFocusedField('otp')}
-                      onBlur={() => setFocusedField(null)}
-                      editable={!isLoading}
-                    />
-                  </View>
-                </View>
-
-                {/* Complete Registration Button */}
-                <TouchableOpacity
-                  style={[styles.submitButton, (isLoading || otp.length < 6) && { opacity: 0.7 }]}
-                  onPress={handleCompleteRegistration}
-                  activeOpacity={0.85}
-                  disabled={isLoading || otp.length < 6}
-                >
-                  {isLoading ? (
-                    <ActivityIndicator color="#ffffff" />
-                  ) : (
-                    <Text style={styles.submitButtonText}>Verify & Create Account</Text>
-                  )}
-                </TouchableOpacity>
-
-                {/* Resend OTP */}
-                <View style={{ flexDirection: 'row', justifyContent: 'center', alignItems: 'center', marginTop: 16 }}>
-                  <Text style={{ color: Colors.light.secondaryText, fontSize: 14 }}>Didn't receive code? </Text>
-                  {resending ? (
-                    <ActivityIndicator size="small" color={Colors.light.primary} />
-                  ) : countdown > 0 ? (
-                    <Text style={{ color: Colors.light.primary, fontWeight: '600', fontSize: 14 }}>
-                      Resend in {countdown}s
-                    </Text>
-                  ) : (
-                    <TouchableOpacity onPress={handleResendOtp}>
-                      <Text style={{ color: Colors.light.primary, fontWeight: '700', fontSize: 14 }}>
-                        Resend Code
-                      </Text>
-                    </TouchableOpacity>
-                  )}
-                </View>
-
-                {/* Back to Edit Form */}
-                <TouchableOpacity
-                  style={{ marginTop: 24, alignItems: 'center' }}
-                  onPress={() => setStep('form')}
-                  disabled={isLoading}
-                >
-                  <Text style={{ color: Colors.light.primary, fontSize: 14 }}>← Back to Edit Details</Text>
-                </TouchableOpacity>
-              </View>
-            </>
+          {/* ── Footer ── */}
+          {step === 1 && (
+            <View style={styles.footer}>
+              <Text style={styles.footerText}>Already have an account?</Text>
+              <TouchableOpacity
+                onPress={() => {
+                  if (router.canGoBack()) {
+                    router.back();
+                  } else {
+                    router.replace('/login');
+                  }
+                }}
+                disabled={isLoading}
+              >
+                <Text style={styles.footerLink}>Log in</Text>
+              </TouchableOpacity>
+            </View>
           )}
         </ScrollView>
       </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
+
+const stepBarStyles = StyleSheet.create({
+  progressContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    marginBottom: 16,
+    paddingHorizontal: 20,
+  },
+  progressStep: {
+    flex: 1,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: '#E4E7EA',
+  },
+  progressStepActive: {
+    backgroundColor: Colors.light.primary,
+  },
+});
 
 const otpStyles = StyleSheet.create({
   noticeCard: {
@@ -505,12 +615,12 @@ const otpStyles = StyleSheet.create({
     borderColor: '#bbf7d0',
     borderWidth: 1,
     borderRadius: 8,
-    padding: 14,
-    marginBottom: 20,
+    padding: 12,
+    marginBottom: 16,
     width: '100%',
   },
   noticeTitle: {
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: '700',
     color: '#166534',
     marginBottom: 2,

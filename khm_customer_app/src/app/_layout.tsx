@@ -1,7 +1,7 @@
 import { DarkTheme, DefaultTheme, ThemeProvider } from 'expo-router';
 import { Drawer } from 'expo-router/drawer';
 import * as SplashScreen from 'expo-splash-screen';
-import { useColorScheme } from 'react-native';
+import { useColorScheme, Platform } from 'react-native';
 import { useEffect } from 'react';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
@@ -9,15 +9,25 @@ import * as NavigationBar from 'expo-navigation-bar';
 import { AuthProvider } from '../context/AuthContext';
 import Profile from './profile';
 
-SplashScreen.preventAutoHideAsync();
+SplashScreen.preventAutoHideAsync().catch(() => {});
 
 export default function TabLayout() {
   const colorScheme = useColorScheme();
 
   useEffect(() => {
     async function prepare() {
-      await NavigationBar.setVisibilityAsync('hidden');
-      await SplashScreen.hideAsync();
+      if (Platform.OS === 'android') {
+        try {
+          await NavigationBar.setVisibilityAsync('hidden');
+        } catch {
+          // Current activity may not be ready or available during app reloads
+        }
+      }
+      try {
+        await SplashScreen.hideAsync();
+      } catch {
+        // Splash screen may already be hidden
+      }
     }
     prepare();
   }, []);

@@ -45,6 +45,10 @@ const bookingSchema = new mongoose.Schema({
     default: 'requesting',
   },
 
+  cancellationReason: { type: String, default: null },
+  cancelledBy: { type: String, enum: ['customer', 'driver', 'system'], default: null },
+  cancelledAt: { type: Date, default: null },
+
   // In-ride chat messages history
   messages: [{
     senderId: { type: String, default: '' },

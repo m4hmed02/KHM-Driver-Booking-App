@@ -4,13 +4,13 @@ import { Drawer } from 'expo-router/drawer';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect } from 'react';
-import { useColorScheme } from 'react-native';
+import { useColorScheme, Platform } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { AuthProvider, useAuth } from '../context/AuthContext';
 import { connectSocket, disconnectSocket } from '../services/socket';
 import Profile from './profile';
 
-SplashScreen.preventAutoHideAsync();
+SplashScreen.preventAutoHideAsync().catch(() => {});
 
 /**
  * Manages the Socket.io connection lifecycle tied to auth state.
@@ -35,8 +35,18 @@ export default function RootLayout() {
 
   useEffect(() => {
     async function prepare() {
-      await NavigationBar.setVisibilityAsync('hidden');
-      await SplashScreen.hideAsync();
+      if (Platform.OS === 'android') {
+        try {
+          await NavigationBar.setVisibilityAsync('hidden');
+        } catch {
+          // Current activity may not be ready or available during app reloads
+        }
+      }
+      try {
+        await SplashScreen.hideAsync();
+      } catch {
+        // Splash screen may already be hidden
+      }
     }
     prepare();
   }, []);

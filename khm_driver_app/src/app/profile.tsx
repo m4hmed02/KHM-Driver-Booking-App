@@ -14,6 +14,7 @@ import { Image } from 'expo-image';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Colors } from '../constants/theme';
 import { useAuth } from '../context/AuthContext';
+import { disconnectSocket } from '../services/socket';
 import { DrawerContentScrollView } from 'expo-router/drawer';
 
 export default function Profile(props?: any) {
@@ -30,21 +31,35 @@ export default function Profile(props?: any) {
         }
     };
 
-    const handleLogout = async () => {
-        setIsLoggingOut(true);
-        try {
-            await logout();
-            closeDrawer();
-            if (typeof router.canDismiss === 'function' && router.canDismiss()) {
-                router.dismissAll();
-            }
-            router.replace('/login');
-        } catch (error) {
-            console.error('Logout error:', error);
-            Alert.alert('Error', 'Failed to log out. Please try again.');
-        } finally {
-            setIsLoggingOut(false);
-        }
+    const handleLogout = () => {
+        Alert.alert(
+            'Logout',
+            'Are you sure you want to logout?',
+            [
+                { text: 'Cancel', style: 'cancel' },
+                {
+                    text: 'Logout',
+                    style: 'destructive',
+                    onPress: async () => {
+                        setIsLoggingOut(true);
+                        try {
+                            disconnectSocket();
+                            await logout();
+                            closeDrawer();
+                            if (typeof router.canDismiss === 'function' && router.canDismiss()) {
+                                router.dismissAll();
+                            }
+                            router.replace('/login');
+                        } catch (error) {
+                            console.error('Logout error:', error);
+                            Alert.alert('Error', 'Failed to log out. Please try again.');
+                        } finally {
+                            setIsLoggingOut(false);
+                        }
+                    },
+                },
+            ]
+        );
     };
 
     const navigateTo = (route: string) => {

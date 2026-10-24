@@ -22,9 +22,13 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import {
     ActivityIndicator,
     Alert,
+    KeyboardAvoidingView,
     Linking,
+    Modal,
+    Platform,
     StyleSheet,
     Text,
+    TextInput,
     TouchableOpacity,
     View,
 } from 'react-native';
@@ -39,6 +43,7 @@ import { useRoadSnappedMarker } from '../hooks/useRoadSnappedMarker';
 import {
     getBookingStatusApi,
     updateBookingStatusApi,
+    cancelBookingApi,
 } from '../services/apis/booking/bookingService';
 import { Booking, CustomerInfo } from '../services/apis/booking/type';
 import { connectSocket, emitDriverLocation, getSocket, joinBookingRoom } from '../services/socket';
@@ -297,6 +302,69 @@ const styles = StyleSheet.create({
         height: 44,
         backgroundColor: Colors.light.border,
     },
+    navGoogleButton: {
+        height: 52,
+        borderRadius: 14,
+        backgroundColor: '#1A73E8',
+        alignItems: 'center',
+        justifyContent: 'center',
+        flexDirection: 'row',
+        gap: 8,
+        marginBottom: 12,
+        shadowColor: '#1A73E8',
+        shadowOffset: { width: 0, height: 3 },
+        shadowOpacity: 0.28,
+        shadowRadius: 6,
+        elevation: 4,
+    },
+    navGoogleButtonText: {
+        color: '#FFFFFF',
+        fontSize: 15,
+        fontWeight: '700',
+    },
+    floatingNavButton: {
+        position: 'absolute',
+        top: 50,
+        left: 20,
+        height: 44,
+        paddingHorizontal: 14,
+        borderRadius: 22,
+        backgroundColor: '#FFFFFF',
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 6,
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.18,
+        shadowRadius: 6,
+        elevation: 5,
+        zIndex: 10,
+        borderWidth: 1,
+        borderColor: '#E2E8F0',
+    },
+    floatingNavText: {
+        fontSize: 13,
+        fontWeight: '700',
+        color: '#1A73E8',
+    },
+    cancelRideButton: {
+        height: 46,
+        borderRadius: 14,
+        borderWidth: 1.5,
+        borderColor: Colors.light.red ?? '#EF4444',
+        alignItems: 'center',
+        justifyContent: 'center',
+        flexDirection: 'row',
+        gap: 6,
+        marginTop: 10,
+        backgroundColor: '#FEF2F2',
+    },
+    cancelRideText: {
+        fontSize: 14,
+        fontWeight: '700',
+        color: Colors.light.red ?? '#EF4444',
+    },
 });
 
 
@@ -324,6 +392,10 @@ export default function ActiveRide() {
     const [customerComing, setCustomerComing] = useState(false);
     const [showCompleted, setShowCompleted] = useState(false);
     const [showChat, setShowChat] = useState(false);
+    const [showCancelModal, setShowCancelModal] = useState(false);
+    const [cancelReason, setCancelReason] = useState('');
+    const [cancelCustomText, setCancelCustomText] = useState('');
+    const [isCancelling, setIsCancelling] = useState(false);
 
     // ── Smooth animated marker ────────────────────────────────────────────────
     // animatedCoord  — interpolated lat/lng updated every rAF frame
@@ -385,15 +457,49 @@ export default function ActiveRide() {
             joinBookingRoom(bookingId);
         }
 
-        const handleCustomerComing = (payload: { bookingId: string }) => {
-            if (payload.bookingId === bookingId) {
+        const handleCustomerComing = (payload: { bookingId: string; customerName?: string }) => {
+            const incomingId = payload?.bookingId;
+            if (!incomingId || incomingId === bookingId) {
                 setCustomerComing(true);
+                const customerInfo = typeof bookingRef.current?.customer === 'object'
+                    ? (bookingRef.current.customer as any)
+                    : null;
+                const name = payload?.customerName || customerInfo?.name || 'Customer';
+                Alert.alert(
+                    'Customer is Coming',
+                    `${name} is on the way to you!`,
+                    [{ text: 'OK' }]
+                );
+            }
+        };
+
+        const handleRideCancelled = (payload: any) => {
+            const incomingId = payload?.bookingId ?? payload?._id;
+            if (!incomingId || incomingId === bookingId) {
+                Alert.alert(
+                    'Ride Cancelled',
+                    payload?.reason || payload?.cancellationReason
+                        ? `The customer has cancelled the ride: ${payload.reason || payload.cancellationReason}`
+                        : 'The customer has cancelled this ride.',
+                    [{ text: 'OK', onPress: () => router.replace('/home') }]
+                );
+            }
+        };
+
+        const handleStatusUpdated = (payload: any) => {
+            const incomingId = payload?._id ?? payload?.bookingId;
+            if (incomingId === bookingId && payload?.status === 'cancelled') {
+                handleRideCancelled(payload);
             }
         };
 
         socket.on('customer_coming', handleCustomerComing);
+        socket.on('booking_cancelled' as any, handleRideCancelled);
+        socket.on('booking_status_updated' as any, handleStatusUpdated);
         return () => {
             socket.off('customer_coming', handleCustomerComing);
+            socket.off('booking_cancelled' as any, handleRideCancelled);
+            socket.off('booking_status_updated' as any, handleStatusUpdated);
         };
     }, [user, bookingId]);
 
@@ -609,6 +715,106 @@ export default function ActiveRide() {
         }
     };
 
+    /**
+     * Opens turn-by-turn navigation in Google Maps.
+     * Destination is dynamically determined:
+     * - 'started' status → dropoffLocation (final destination)
+     * - other active statuses → pickupLocation
+     */
+    const handleOpenGoogleMaps = useCallback(async () => {
+        if (!booking) return;
+
+        const isHeadingToDropoff = booking.status === 'started';
+        const target = isHeadingToDropoff
+            ? booking.dropoffLocation
+            : booking.pickupLocation;
+
+        const destLat = target.latitude;
+        const destLng = target.longitude;
+
+        const curLat = latestCoordRef.current?.latitude ?? (animatedCoord ? animatedCoord.latitude : null);
+        const curLng = latestCoordRef.current?.longitude ?? (animatedCoord ? animatedCoord.longitude : null);
+
+        // 1. Android Google Maps Turn-by-Turn Navigation Intent
+        if (Platform.OS === 'android') {
+            const googleNavUrl = `google.navigation:q=${destLat},${destLng}&mode=d`;
+            try {
+                const canOpen = await Linking.canOpenURL(googleNavUrl);
+                if (canOpen) {
+                    await Linking.openURL(googleNavUrl);
+                    return;
+                }
+            } catch (e) {
+                console.warn('[GoogleMaps] google.navigation intent failed:', e);
+            }
+        }
+
+        // 2. iOS Google Maps App Scheme
+        if (Platform.OS === 'ios') {
+            const iosGoogleMapsUrl = `comgooglemaps://?daddr=${destLat},${destLng}&directionsmode=driving`;
+            try {
+                const canOpen = await Linking.canOpenURL(iosGoogleMapsUrl);
+                if (canOpen) {
+                    await Linking.openURL(iosGoogleMapsUrl);
+                    return;
+                }
+            } catch (e) {
+                console.warn('[GoogleMaps] comgooglemaps scheme failed:', e);
+            }
+        }
+
+        // 3. Universal Google Maps Directions Web / App Link
+        const originParam = curLat != null && curLng != null ? `&origin=${curLat},${curLng}` : '';
+        const universalUrl = `https://www.google.com/maps/dir/?api=1${originParam}&destination=${destLat},${destLng}&travelmode=driving`;
+
+        try {
+            await Linking.openURL(universalUrl);
+        } catch (e) {
+            console.error('[GoogleMaps] Linking error:', e);
+            Alert.alert('Navigation Error', 'Could not open Google Maps navigation.');
+        }
+    }, [booking, animatedCoord]);
+
+    // ── Driver Cancel Ride ────────────────────────────────────────────────────
+
+    const handleCancelRide = async () => {
+        const reason = cancelReason === 'Other' ? cancelCustomText.trim() : cancelReason;
+        if (!reason) {
+            Alert.alert('Please select a reason', 'Choose a reason or enter your own before cancelling.');
+            return;
+        }
+        if (!bookingId) return;
+
+        setIsCancelling(true);
+        try {
+            await cancelBookingApi(bookingId, reason);
+            setShowCancelModal(false);
+
+            // Tear down GPS tracking
+            if (locationSubRef.current) {
+                locationSubRef.current.remove();
+                locationSubRef.current = null;
+            }
+            if (locationEmitTimer.current) {
+                clearInterval(locationEmitTimer.current);
+                locationEmitTimer.current = null;
+            }
+
+            Alert.alert(
+                'Ride Cancelled',
+                'You have cancelled this ride.',
+                [{ text: 'OK', onPress: () => router.replace('/home') }]
+            );
+        } catch (err) {
+            Alert.alert(
+                'Could not cancel',
+                err instanceof Error ? err.message : 'Please try again.'
+            );
+        } finally {
+            setIsCancelling(false);
+        }
+    };
+
     // ── Loading ───────────────────────────────────────────────────────────────
 
     if (isLoading || !booking) {
@@ -757,6 +963,18 @@ export default function ActiveRide() {
                 )}
             </MapView>
 
+            {/* Google Maps Floating Navigation Button */}
+            <TouchableOpacity
+                style={styles.floatingNavButton}
+                onPress={handleOpenGoogleMaps}
+                activeOpacity={0.85}
+            >
+                <Ionicons name="navigate" size={18} color="#1A73E8" />
+                <Text style={styles.floatingNavText}>
+                    {booking.status === 'started' ? 'Maps (Dropoff)' : 'Maps (Pickup)'}
+                </Text>
+            </TouchableOpacity>
+
             {/* Recenter button */}
             {animatedCoord && (
                 <TouchableOpacity
@@ -817,9 +1035,23 @@ export default function ActiveRide() {
                         </View>
                     )}
 
-                    {/* Call + Chat action row */}
+                    {/* Navigation + Call + Chat action row */}
                     {customer && (
                         <View style={styles.contactRow}>
+                            {/* Google Maps button */}
+                            <TouchableOpacity
+                                style={styles.contactBtn}
+                                onPress={handleOpenGoogleMaps}
+                                activeOpacity={0.8}
+                            >
+                                <View style={[styles.contactIcon, { backgroundColor: '#1A73E8' }]}>
+                                    <Ionicons name="navigate" size={20} color="#fff" />
+                                </View>
+                                <Text style={styles.contactLabel}>Google Maps</Text>
+                            </TouchableOpacity>
+
+                            <View style={styles.contactDivider} />
+
                             {/* Call button */}
                             <TouchableOpacity
                                 style={styles.contactBtn}
@@ -865,6 +1097,8 @@ export default function ActiveRide() {
                         </View>
                     )}
 
+
+
                     {/* Primary action button */}
                     {cardContent.primaryButton && (
                         <TouchableOpacity
@@ -885,6 +1119,21 @@ export default function ActiveRide() {
                             )}
                         </TouchableOpacity>
                     )}
+
+                    {/* Cancel Ride button — works at all stages including after starting the ride */}
+                    <TouchableOpacity
+                        style={styles.cancelRideButton}
+                        onPress={() => {
+                            setCancelReason('');
+                            setCancelCustomText('');
+                            setShowCancelModal(true);
+                        }}
+                        disabled={isUpdating || isCancelling}
+                        activeOpacity={0.8}
+                    >
+                        <Ionicons name="close-circle-outline" size={18} color={Colors.light.red ?? '#EF4444'} />
+                        <Text style={styles.cancelRideText}>Cancel Ride</Text>
+                    </TouchableOpacity>
                 </View>
             )}
 
@@ -930,6 +1179,164 @@ export default function ActiveRide() {
                     recipientName={customer.name ?? 'Customer'}
                 />
             )}
+
+            {/* ── Driver Cancel Reason Modal ────────────────────────────────────── */}
+            <Modal
+                visible={showCancelModal}
+                transparent
+                animationType="slide"
+                onRequestClose={() => !isCancelling && setShowCancelModal(false)}
+            >
+                <KeyboardAvoidingView
+                    behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+                    style={{ flex: 1 }}
+                >
+                    <TouchableOpacity
+                        style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.45)' }}
+                        activeOpacity={1}
+                        onPress={() => !isCancelling && setShowCancelModal(false)}
+                    >
+                        <TouchableOpacity
+                            activeOpacity={1}
+                            style={{
+                                position: 'absolute',
+                                bottom: 0,
+                                left: 0,
+                                right: 0,
+                                backgroundColor: Colors.light.background,
+                                borderTopLeftRadius: 24,
+                                borderTopRightRadius: 24,
+                                paddingHorizontal: 20,
+                                paddingTop: 8,
+                                paddingBottom: Platform.OS === 'ios' ? 40 : 28,
+                            }}
+                        >
+                            <View style={{
+                                width: 40, height: 4, borderRadius: 2,
+                                backgroundColor: Colors.light.border,
+                                alignSelf: 'center',
+                                marginBottom: 20,
+                            }} />
+
+                            <Text style={{ fontSize: 18, fontWeight: '800', color: Colors.light.text, marginBottom: 4 }}>
+                                Cancel Ride
+                            </Text>
+                            <Text style={{ fontSize: 13, color: Colors.light.secondaryText, marginBottom: 16 }}>
+                                {booking?.status === 'started'
+                                    ? 'The ride is currently in progress. Please choose a reason to cancel:'
+                                    : 'Please select a reason for cancelling this ride:'}
+                            </Text>
+
+                            {[
+                                'Vehicle breakdown / Flat tire',
+                                'Customer requested cancellation',
+                                'Heavy traffic / Road closed',
+                                'Customer not responding / No-show',
+                                'Personal emergency',
+                                'Other',
+                            ].map((reason) => (
+                                <TouchableOpacity
+                                    key={reason}
+                                    onPress={() => { setCancelReason(reason); setCancelCustomText(''); }}
+                                    activeOpacity={0.75}
+                                    style={{
+                                        flexDirection: 'row',
+                                        alignItems: 'center',
+                                        paddingVertical: 13,
+                                        paddingHorizontal: 4,
+                                        borderBottomWidth: StyleSheet.hairlineWidth,
+                                        borderBottomColor: Colors.light.border,
+                                        gap: 12,
+                                    }}
+                                >
+                                    <View style={{
+                                        width: 22, height: 22, borderRadius: 11,
+                                        borderWidth: 2,
+                                        borderColor: cancelReason === reason ? Colors.light.primary : Colors.light.border,
+                                        backgroundColor: cancelReason === reason ? Colors.light.primary : 'transparent',
+                                        alignItems: 'center', justifyContent: 'center',
+                                    }}>
+                                        {cancelReason === reason && (
+                                            <View style={{
+                                                width: 8, height: 8, borderRadius: 4,
+                                                backgroundColor: '#fff',
+                                            }} />
+                                        )}
+                                    </View>
+                                    <Text style={{
+                                        fontSize: 15,
+                                        color: cancelReason === reason ? Colors.light.text : Colors.light.secondaryText,
+                                        fontWeight: cancelReason === reason ? '600' : '400',
+                                        flex: 1,
+                                    }}>
+                                        {reason}
+                                    </Text>
+                                </TouchableOpacity>
+                            ))}
+
+                            {cancelReason === 'Other' && (
+                                <TextInput
+                                    value={cancelCustomText}
+                                    onChangeText={setCancelCustomText}
+                                    placeholder="Describe reason for cancellation…"
+                                    placeholderTextColor={Colors.light.secondaryText}
+                                    multiline
+                                    maxLength={200}
+                                    style={{
+                                        marginTop: 12,
+                                        borderWidth: 1.5,
+                                        borderColor: Colors.light.primary,
+                                        borderRadius: 12,
+                                        padding: 12,
+                                        fontSize: 14,
+                                        color: Colors.light.text,
+                                        minHeight: 70,
+                                        textAlignVertical: 'top',
+                                    }}
+                                />
+                            )}
+
+                            <View style={{ flexDirection: 'row', gap: 12, marginTop: 20 }}>
+                                <TouchableOpacity
+                                    onPress={() => setShowCancelModal(false)}
+                                    disabled={isCancelling}
+                                    activeOpacity={0.8}
+                                    style={{
+                                        flex: 1, height: 50, borderRadius: 12,
+                                        borderWidth: 1.5, borderColor: Colors.light.border,
+                                        justifyContent: 'center', alignItems: 'center',
+                                    }}
+                                >
+                                    <Text style={{ fontSize: 15, fontWeight: '600', color: Colors.light.secondaryText }}>
+                                        Keep Ride
+                                    </Text>
+                                </TouchableOpacity>
+
+                                <TouchableOpacity
+                                    onPress={handleCancelRide}
+                                    disabled={isCancelling || !cancelReason || (cancelReason === 'Other' && !cancelCustomText.trim())}
+                                    activeOpacity={0.8}
+                                    style={{
+                                        flex: 1, height: 50, borderRadius: 12,
+                                        backgroundColor: (!cancelReason || (cancelReason === 'Other' && !cancelCustomText.trim()))
+                                            ? Colors.light.border
+                                            : (Colors.light.red ?? '#EF4444'),
+                                        justifyContent: 'center', alignItems: 'center',
+                                    }}
+                                >
+                                    {isCancelling ? (
+                                        <ActivityIndicator size="small" color="#fff" />
+                                    ) : (
+                                        <Text style={{ fontSize: 15, fontWeight: '700', color: '#fff' }}>
+                                            Confirm Cancel
+                                        </Text>
+                                    )}
+                                </TouchableOpacity>
+                            </View>
+                        </TouchableOpacity>
+                    </TouchableOpacity>
+                </KeyboardAvoidingView>
+            </Modal>
         </View>
     );
 }

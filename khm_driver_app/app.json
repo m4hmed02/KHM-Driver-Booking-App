@@ -15,7 +15,8 @@
       },
       "config": {
         "googleMapsApiKey": "$(EXPO_PUBLIC_GOOGLE_MAP_API_KEY_ANDROID)"
-      }
+      },
+      "bundleIdentifier": "com.khm.driverapp"
     },
     "android": {
       "adaptiveIcon": {
@@ -54,7 +55,8 @@
       [
         "react-native-maps",
         {
-          "androidGoogleMapsApiKey": "AIzaSyBorjF-2cnNBw3DWN1uaQROLobmrmVFgk0"
+          "androidGoogleMapsApiKey": "AIzaSyBorjF-2cnNBw3DWN1uaQROLobmrmVFgk0",
+          "iosGoogleMapsApiKey": "AIzaSyBorjF-2cnNBw3DWN1uaQROLobmrmVFgk0"
         }
       ],
       [

@@ -42,10 +42,13 @@ export const getBookingStatusApi = async (bookingId: string): Promise<Booking> =
   }
 };
 
-export const deleteBookingApi = async (bookingId: string): Promise<void> => {
+export const deleteBookingApi = async (bookingId: string, reason?: string): Promise<void> => {
   const headers = await getAuthHeader();
   try {
-    await axios.delete(`${API_URL}/bookings/${bookingId}`, { headers });
+    await axios.delete(`${API_URL}/bookings/${bookingId}`, {
+      headers,
+      data: reason ? { reason } : undefined,
+    });
   } catch (error: any) {
     const message = error.response?.data?.message || error.message || 'Failed to delete booking';
     throw new Error(message);

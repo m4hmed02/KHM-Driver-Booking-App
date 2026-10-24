@@ -26,6 +26,10 @@ import {
   verifyRegisterOtpApi,
   resendOtpApi
 } from '../services/apis/auth/authService';
+import PhoneInputWithCountry, {
+  CountryCode,
+  validatePhone,
+} from '../components/PhoneInputWithCountry';
 
 type FocusedField =
   | 'name'
@@ -44,7 +48,9 @@ export default function Signup() {
   const [step, setStep] = useState<1 | 2 | 3>(1);
   const [avatarUri, setAvatarUri] = useState<string | null>(null);
   const [name, setName] = useState('');
-  const [phone, setPhone] = useState('');
+  const [countryCode, setCountryCode] = useState<CountryCode>('+971');
+  const [phoneDigits, setPhoneDigits] = useState('');
+  const [fullPhone, setFullPhone] = useState('');
   const [email, setEmail] = useState('');
   const [otp, setOtp] = useState('');
   const [password, setPassword] = useState('');
@@ -122,16 +128,19 @@ export default function Signup() {
       Alert.alert('Required', 'Please enter your full name.');
       return;
     }
-    if (!phone.trim()) {
-      Alert.alert('Required', 'Please enter your phone number.');
+    const phoneVal = validatePhone(phoneDigits, countryCode);
+    if (!phoneVal.isValid) {
+      Alert.alert('Phone Required', phoneVal.error);
       return;
     }
 
+    const targetPhone = phoneVal.fullNumber;
+    setFullPhone(targetPhone);
     setIsLoading(true);
     try {
-      console.log('[DriverSignup] Sending register OTP request for phone:', phone.trim());
+      console.log('[DriverSignup] Sending register OTP request for phone:', targetPhone);
       await sendRegisterOtpApi({
-        phone: phone.trim(),
+        phone: targetPhone,
         email: email.trim() || undefined,
       });
       console.log('[DriverSignup] Register OTP sent successfully');
@@ -157,11 +166,12 @@ export default function Signup() {
       return;
     }
 
+    const targetPhone = fullPhone || `${countryCode}${phoneDigits}`;
     setIsLoading(true);
     try {
       console.log('[DriverSignup] Verifying OTP step 2:', otp.trim());
       await verifyRegisterOtpApi({
-        phone: phone.trim(),
+        phone: targetPhone,
         otp: otp.trim(),
       });
       console.log('[DriverSignup] OTP step 2 verified successfully');
@@ -179,7 +189,7 @@ export default function Signup() {
     if (countdown > 0) return;
     setResending(true);
     try {
-      await resendOtpApi(phone.trim(), 'register');
+      await resendOtpApi(fullPhone || `${countryCode}${phoneDigits}`, 'register');
       setCountdown(30);
       Alert.alert('OTP Resent', 'A new verification code has been printed to the backend terminal.');
     } catch (error: any) {
@@ -209,7 +219,7 @@ export default function Signup() {
       console.log('[DriverSignup] Completing driver registration with OTP:', otp.trim());
       const payload = {
         name: name.trim(),
-        phone: phone.trim(),
+        phone: fullPhone || `${countryCode}${phoneDigits}`,
         email: email.trim(),
         password,
         role: 'driver',
@@ -238,7 +248,7 @@ export default function Signup() {
     } finally {
       setIsLoading(false);
     }
-  }, [name, phone, email, password, confirmPassword, otp, avatarUri, register, router]);
+  }, [name, fullPhone, countryCode, phoneDigits, email, password, confirmPassword, otp, avatarUri, register, router]);
 
   // ─── Helpers 
   const rowStyle = (field: FocusedField) =>
@@ -257,6 +267,13 @@ export default function Signup() {
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
         >
+          {/* ── Step Progress Indicator ── */}
+          <View style={stepBarStyles.progressContainer}>
+            <View style={[stepBarStyles.progressStep, step >= 1 && stepBarStyles.progressStepActive]} />
+            <View style={[stepBarStyles.progressStep, step >= 2 && stepBarStyles.progressStepActive]} />
+            <View style={[stepBarStyles.progressStep, step >= 3 && stepBarStyles.progressStepActive]} />
+          </View>
+
           {/* ── Header ── */}
           <View style={styles.header}>
             <Text style={styles.title}>
@@ -266,7 +283,7 @@ export default function Signup() {
               {step === 1
                 ? 'Join as a professional driver'
                 : step === 2
-                ? `Enter the OTP sent for ${phone}`
+                ? `Enter the OTP sent for ${fullPhone || phoneDigits}`
                 : 'Create your account password'}
             </Text>
           </View>
@@ -325,21 +342,20 @@ export default function Signup() {
                   <Text style={styles.label}>
                     Phone Number <Text style={styles.requiredStar}>*</Text>
                   </Text>
-                  <View style={rowStyle('phone')}>
-                    <Ionicons name="call-outline" size={20} color={Colors.light.secondaryText} style={styles.inputIcon as any} />
-                    <TextInput
-                      style={styles.input}
-                      placeholder="+971 50 123 4567"
-                      placeholderTextColor="#AAAAAA"
-                      value={phone}
-                      onChangeText={setPhone}
-                      keyboardType="phone-pad"
-                      returnKeyType="done"
-                      onFocus={() => setFocusedField('phone')}
-                      onBlur={() => setFocusedField(null)}
-                      editable={!isLoading}
-                    />
-                  </View>
+                  <PhoneInputWithCountry
+                    countryCode={countryCode}
+                    onCountryChange={setCountryCode}
+                    rawDigits={phoneDigits}
+                    onChangeDigits={(digits, full) => {
+                      setPhoneDigits(digits);
+                      setFullPhone(full);
+                    }}
+                    variant="signup"
+                    editable={!isLoading}
+                    isFocused={focusedField === 'phone'}
+                    onFocus={() => setFocusedField('phone')}
+                    onBlur={() => setFocusedField(null)}
+                  />
                 </View>
 
                 <TouchableOpacity
@@ -570,6 +586,26 @@ export default function Signup() {
     </SafeAreaView>
   );
 }
+
+const stepBarStyles = StyleSheet.create({
+  progressContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    marginBottom: 16,
+    paddingHorizontal: 20,
+  },
+  progressStep: {
+    flex: 1,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: '#E4E7EA',
+  },
+  progressStepActive: {
+    backgroundColor: Colors.light.primary,
+  },
+});
 
 const otpStyles = StyleSheet.create({
   noticeCard: {

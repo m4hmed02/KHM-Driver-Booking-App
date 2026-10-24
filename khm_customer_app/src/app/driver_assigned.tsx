@@ -90,7 +90,7 @@ export default function DriverAssigned() {
       {/* Bottom Overlaid Cards */}
       <View style={styles.bottomSheet} pointerEvents="box-none">
         {/* I'm Coming Button */}
-        <TouchableOpacity style={styles.okButton} onPress={() => router.replace('/trip_in_progress')}>
+        <TouchableOpacity style={styles.okButton} onPress={() => router.replace('/trip_in_progress' as any)}>
           <Text style={styles.okButtonText}>I'm Coming</Text>
         </TouchableOpacity>
 

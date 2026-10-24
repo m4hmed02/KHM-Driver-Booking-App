@@ -348,7 +348,7 @@ export default function Home() {
                     edgePadding: {
                         top: 100,
                         right: 50,
-                        bottom: (SCREEN_HEIGHT * 0.52) + 50, // 0.52 is the lowest snap point of the bottom sheet
+                        bottom: (SCREEN_HEIGHT * 0.48) + 50, // 0.48 is the lowest snap point of the bottom sheet
                         left: 50,
                     },
                     animated: true,
@@ -356,6 +356,20 @@ export default function Home() {
             );
         }
     }, [routeCoordinates, pickupCoordinate, dropoffCoordinate]);
+
+    // When both coordinates are cleared (e.g. after trip ends or user resets),
+    // snap the sheet to the minimum/lower height (index 0) so the map is visible by default.
+    useEffect(() => {
+        if (!pickupCoordinate && !dropoffCoordinate && !activeBooking) {
+            // Small delay lets the sheet mount before animating
+            const t = setTimeout(() => {
+                sheetRef.current?.snapToIndex(0);
+            }, 100);
+            return () => clearTimeout(t);
+        }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [pickupCoordinate, dropoffCoordinate, activeBooking]);
+
 
     // Calculate fare once the route is drawn and we have distance + duration.
     // Intentionally NOT including routeCoordinates in deps — we key off the scalar
@@ -553,15 +567,41 @@ export default function Home() {
                 setActiveBooking((prev: any) => prev ? { ...prev, status: 'completed' } : prev);
                 if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
                 router.replace(`/trip_completed?bookingId=${bId}&fare=${fare}`);
+            } else if (newStatus === 'cancelled') {
+                const bId = payload._id ?? activeBooking._id;
+                clearBookingState(bId);
+                setShowCancelModal(false);
+                const title = payload.cancelledBy === 'driver' ? 'Ride Cancelled by Driver' : 'Ride Cancelled';
+                Alert.alert(
+                    title,
+                    payload.cancellationReason || payload.reason
+                        ? `The driver cancelled this ride: ${payload.cancellationReason || payload.reason}`
+                        : 'The driver has cancelled this ride.'
+                );
             }
+        };
+
+        const handleBookingCancelled = (payload: any) => {
+            const bId = payload?._id ?? payload?.bookingId ?? activeBooking?._id;
+            clearBookingState(bId);
+            setShowCancelModal(false);
+            const title = payload?.cancelledBy === 'driver' ? 'Ride Cancelled by Driver' : 'Ride Cancelled';
+            Alert.alert(
+                title,
+                payload?.cancellationReason || payload?.reason
+                    ? `The driver cancelled this ride: ${payload.cancellationReason || payload.reason}`
+                    : 'The driver has cancelled this ride.'
+            );
         };
 
         socket.on('driver_location_update' as any, handleDriverLocation);
         socket.on('booking_status_updated' as any, handleStatusUpdate);
+        socket.on('booking_cancelled' as any, handleBookingCancelled);
 
         return () => {
             socket.off('driver_location_update' as any, handleDriverLocation);
             socket.off('booking_status_updated' as any, handleStatusUpdate);
+            socket.off('booking_cancelled' as any, handleBookingCancelled);
         };
     // Only reconnect when the user session or active booking changes.
     // All other values (tripInProgress, coordinates, driver info) are read
@@ -645,9 +685,10 @@ export default function Home() {
         if (!activeBooking) return;
         setIsCancelling(true);
         try {
-            await deleteBookingApi(activeBooking._id);
+            await deleteBookingApi(activeBooking._id, reason);
             setShowCancelModal(false);
             clearBookingState(activeBooking._id);
+            Alert.alert('Ride Cancelled', 'Your ride has been cancelled.');
         } catch (err) {
             Alert.alert('Could not cancel', err instanceof Error ? err.message : 'Please try again.');
         } finally {
@@ -1144,14 +1185,20 @@ export default function Home() {
                 {!activeBooking && (
                 <DraggableBottomSheet
                     ref={sheetRef}
-                    snapPoints={[0.52, 0.65, 0.75]}
+                    snapPoints={[0.48, 0.65, 0.80, 0.92]}
                     initialSnap={0}
                     backgroundColor={theme.background}
                 >
+                    <KeyboardAvoidingView
+                        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+                        style={{ flex: 1 }}
+                        keyboardVerticalOffset={0}
+                    >
                     <ScrollView
-                        contentContainerStyle={{ padding: 20, paddingBottom: 100 }}
-                        keyboardShouldPersistTaps="handled"
+                        contentContainerStyle={{ padding: 20, paddingBottom: 120 }}
+                        keyboardShouldPersistTaps="always"
                         showsVerticalScrollIndicator={false}
+                        nestedScrollEnabled={true}
                     >
                         <LocationInputCard
                             pickupLocation={pickup}
@@ -1160,9 +1207,10 @@ export default function Home() {
                             dropoffLocation={dropoff}
                             setDropoffLocation={setDropoff}
                             setDropoffCoordinate={setDropoffCoordinate}
-                            onInputFocus={() => sheetRef.current?.snapToIndex(2)}
+                            onInputFocus={() => sheetRef.current?.snapToIndex(3)}
                             onFocusChange={setFocusedInput}
                         />
+
 
                         {/* Fare card — shown when both locations are set */}
                         {!focusedInput && pickupCoordinate && dropoffCoordinate && (
@@ -1246,66 +1294,120 @@ export default function Home() {
 
                         {!focusedInput && (
                             <View style={{ marginTop: 24, marginBottom: 4, gap: 12 }}>
+
+                            {/* ── Driver Now card ── */}
                             <TouchableOpacity
-                                style={{ flexDirection: 'row', alignItems: 'center', padding: 16, borderRadius: 12, borderWidth: 1, borderColor: scheduleType === 'now' ? theme.primary : theme.border, backgroundColor: scheduleType === 'now' ? theme.success : theme.background, gap: 16 }}
+                                style={{
+                                    flexDirection: 'row', alignItems: 'center', padding: 16,
+                                    borderRadius: 14, borderWidth: 1.5,
+                                    borderColor: scheduleType === 'now' ? theme.primary : theme.border,
+                                    backgroundColor: scheduleType === 'now' ? theme.success : theme.background,
+                                    gap: 16,
+                                }}
                                 activeOpacity={0.7}
                                 onPress={() => {
                                     setScheduleType('now');
-                                    // Snap sheet back down when switching away from schedule
-                                    sheetRef.current?.snapToIndex(0);
+                                    // Expand the sheet to full-screen so fare + request button are all visible
+                                    sheetRef.current?.snapToIndex(3);
                                 }}
                             >
-                                <View style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: scheduleType === 'now' ? '#D5F0D9' : '#F3F4F6', justifyContent: 'center', alignItems: 'center' }}>
-                                    <Ionicons name="flash" size={20} color={scheduleType === 'now' ? theme.primaryDark : theme.icon} />
+                                <View style={{ width: 44, height: 44, borderRadius: 22, backgroundColor: scheduleType === 'now' ? '#D5F0D9' : '#F3F4F6', justifyContent: 'center', alignItems: 'center' }}>
+                                    <Ionicons name="flash" size={22} color={scheduleType === 'now' ? theme.primaryDark : theme.icon} />
                                 </View>
                                 <View style={{ flex: 1 }}>
-                                    <Text style={{ fontSize: 16, color: theme.text, fontWeight: '600', marginBottom: 4 }}>Driver Now</Text>
-                                    <Text style={{ fontSize: 13, color: theme.secondaryText, lineHeight: 18 }}>Quickest arrival. Nearest available driver will be assigned immediately.</Text>
+                                    <Text style={{ fontSize: 16, color: theme.text, fontWeight: '700', marginBottom: 3 }}>Driver Now</Text>
+                                    <Text style={{ fontSize: 13, color: theme.secondaryText, lineHeight: 18 }}>Quickest arrival. Nearest available driver assigned immediately.</Text>
                                 </View>
                                 <Ionicons name={scheduleType === 'now' ? 'checkmark-circle' : 'ellipse-outline'} size={28} color={scheduleType === 'now' ? theme.primary : '#D1D5DB'} />
                             </TouchableOpacity>
 
+                            {/* ── Schedule Driver card ── */}
                             <TouchableOpacity
-                                style={{ flexDirection: 'row', alignItems: 'center', padding: 16, borderRadius: 12, borderWidth: 1, borderColor: scheduleType === 'schedule' ? theme.primary : theme.border, backgroundColor: scheduleType === 'schedule' ? theme.success : theme.background, gap: 16 }}
+                                style={{
+                                    flexDirection: 'row', alignItems: 'center', padding: 16,
+                                    borderRadius: 14, borderWidth: 1.5,
+                                    borderColor: scheduleType === 'schedule' ? theme.primary : theme.border,
+                                    backgroundColor: scheduleType === 'schedule' ? theme.success : theme.background,
+                                    gap: 16,
+                                }}
                                 activeOpacity={0.7}
                                 onPress={() => {
                                     setScheduleType('schedule');
-                                    // Snap up the bottom sheet slightly so the date/time selectors are visible
-                                    sheetRef.current?.snapToIndex(1);
+                                    // Snap up so the date/time pickers are fully visible
+                                    sheetRef.current?.snapToIndex(2);
                                 }}
                             >
-                                <View style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: scheduleType === 'schedule' ? '#D5F0D9' : '#F3F4F6', justifyContent: 'center', alignItems: 'center' }}>
-                                    <MaterialCommunityIcons name="calendar-clock" size={20} color={scheduleType === 'schedule' ? theme.primaryDark : theme.icon} />
+                                <View style={{ width: 44, height: 44, borderRadius: 22, backgroundColor: scheduleType === 'schedule' ? '#D5F0D9' : '#F3F4F6', justifyContent: 'center', alignItems: 'center' }}>
+                                    <MaterialCommunityIcons name="calendar-clock" size={22} color={scheduleType === 'schedule' ? theme.primaryDark : theme.icon} />
                                 </View>
                                 <View style={{ flex: 1 }}>
-                                    <Text style={{ fontSize: 16, color: theme.text, fontWeight: '600', marginBottom: 4 }}>Schedule Driver</Text>
+                                    <Text style={{ fontSize: 16, color: theme.text, fontWeight: '700', marginBottom: 3 }}>Schedule Driver</Text>
                                     <Text style={{ fontSize: 13, color: theme.secondaryText, lineHeight: 18 }}>Book for later. Guarantee a driver for a specific date and time.</Text>
                                 </View>
                                 <Ionicons name={scheduleType === 'schedule' ? 'checkmark-circle' : 'ellipse-outline'} size={28} color={scheduleType === 'schedule' ? theme.primary : '#D1D5DB'} />
                             </TouchableOpacity>
 
+                            {/* ── Date & Time pickers (Schedule only) ── */}
                             {scheduleType === 'schedule' && (
-                                <View style={{ flexDirection: 'row', gap: 12, marginTop: 4 }}>
-                                    <TouchableOpacity
-                                        style={{ flex: 1, height: 48, backgroundColor: theme.background, borderRadius: 8, justifyContent: 'center', paddingHorizontal: 16, borderWidth: 1, borderColor: theme.border }}
-                                        activeOpacity={0.7}
-                                        onPress={() => setShowDatePicker(true)}
-                                    >
-                                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                                            <Ionicons name="calendar-outline" size={20} color={theme.icon} />
-                                            <Text style={{ fontSize: 14, color: theme.text, fontWeight: '500' }}>{scheduleDate.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })}</Text>
-                                        </View>
-                                    </TouchableOpacity>
-                                    <TouchableOpacity
-                                        style={{ flex: 1, height: 48, backgroundColor: theme.background, borderRadius: 8, justifyContent: 'center', paddingHorizontal: 16, borderWidth: 1, borderColor: theme.border }}
-                                        activeOpacity={0.7}
-                                        onPress={() => setShowTimePicker(true)}
-                                    >
-                                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                                            <Ionicons name="time-outline" size={20} color={theme.icon} />
-                                            <Text style={{ fontSize: 14, color: theme.text, fontWeight: '500' }}>{scheduleDate.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}</Text>
-                                        </View>
-                                    </TouchableOpacity>
+                                <View style={{ marginTop: 8, gap: 10 }}>
+                                    {/* Section label */}
+                                    <Text style={{ fontSize: 13, fontWeight: '600', color: theme.secondaryText, textTransform: 'uppercase', letterSpacing: 0.6 }}>Pickup date & time</Text>
+
+                                    <View style={{ flexDirection: 'row', gap: 10 }}>
+                                        {/* Date button */}
+                                        <TouchableOpacity
+                                            style={{
+                                                flex: 1, flexDirection: 'row', alignItems: 'center', gap: 10,
+                                                paddingVertical: 14, paddingHorizontal: 16,
+                                                backgroundColor: theme.background,
+                                                borderRadius: 12, borderWidth: 1.5, borderColor: theme.primary,
+                                            }}
+                                            activeOpacity={0.7}
+                                            onPress={() => setShowDatePicker(true)}
+                                        >
+                                            <Ionicons name="calendar" size={20} color={theme.primary} />
+                                            <View>
+                                                <Text style={{ fontSize: 11, color: theme.secondaryText, fontWeight: '500', marginBottom: 2 }}>Date</Text>
+                                                <Text style={{ fontSize: 15, color: theme.text, fontWeight: '700' }}>
+                                                    {scheduleDate.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })}
+                                                </Text>
+                                            </View>
+                                        </TouchableOpacity>
+
+                                        {/* Time button */}
+                                        <TouchableOpacity
+                                            style={{
+                                                flex: 1, flexDirection: 'row', alignItems: 'center', gap: 10,
+                                                paddingVertical: 14, paddingHorizontal: 16,
+                                                backgroundColor: theme.background,
+                                                borderRadius: 12, borderWidth: 1.5, borderColor: theme.primary,
+                                            }}
+                                            activeOpacity={0.7}
+                                            onPress={() => setShowTimePicker(true)}
+                                        >
+                                            <Ionicons name="time" size={20} color={theme.primary} />
+                                            <View>
+                                                <Text style={{ fontSize: 11, color: theme.secondaryText, fontWeight: '500', marginBottom: 2 }}>Time</Text>
+                                                <Text style={{ fontSize: 15, color: theme.text, fontWeight: '700' }}>
+                                                    {scheduleDate.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', hour12: true })}
+                                                </Text>
+                                            </View>
+                                        </TouchableOpacity>
+                                    </View>
+
+                                    {/* Summary pill */}
+                                    <View style={{
+                                        flexDirection: 'row', alignItems: 'center', gap: 8,
+                                        backgroundColor: theme.success, borderRadius: 10,
+                                        paddingVertical: 10, paddingHorizontal: 14,
+                                    }}>
+                                        <Ionicons name="checkmark-circle" size={16} color={theme.primaryDark} />
+                                        <Text style={{ fontSize: 13, color: theme.primaryDark, fontWeight: '600' }}>
+                                            {scheduleDate.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' })}
+                                            {'  ·  '}
+                                            {scheduleDate.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', hour12: true })}
+                                        </Text>
+                                    </View>
                                 </View>
                             )}
                         </View>
@@ -1318,6 +1420,7 @@ export default function Home() {
                             <DateTimePicker value={scheduleDate} mode="time" display="default" onChange={handleTimeChange} />
                         )}
                     </ScrollView>
+                    </KeyboardAvoidingView>
                 </DraggableBottomSheet>
                 )}
 
@@ -1818,7 +1921,7 @@ export default function Home() {
                             return (
                             <TouchableOpacity
                                 onPress={() => {
-                                    emitCustomerComing(activeBooking._id, dId);
+                                    emitCustomerComing(activeBooking._id, dId, user?.name);
                                     Alert.alert(
                                         'On My Way!',
                                         'The driver has been notified that you\'re coming.',
@@ -1882,29 +1985,29 @@ export default function Home() {
                             </View>
                         )}
 
-                        {/* Cancel button — only allowed before driver marks arrived */}
-                        {!driverArrived && !tripInProgress && (
-                            <TouchableOpacity
-                                onPress={openCancelModal}
-                                activeOpacity={0.8}
-                                style={{
-                                    marginTop: 14,
-                                    height: 46,
-                                    borderRadius: 12,
-                                    borderWidth: 1.5,
-                                    borderColor: Colors.light.red,
-                                    justifyContent: 'center',
-                                    alignItems: 'center',
-                                    flexDirection: 'row',
-                                    gap: 6,
-                                }}
-                            >
-                                <Ionicons name="close-circle-outline" size={18} color={Colors.light.red} />
-                                <Text style={{ fontSize: 14, fontWeight: '600', color: Colors.light.red }}>
-                                    Cancel Ride
-                                </Text>
-                            </TouchableOpacity>
-                        )}
+                        {/* Cancel button — works before and after ride has started */}
+                        <TouchableOpacity
+                            onPress={openCancelModal}
+                            disabled={isCancelling}
+                            activeOpacity={0.8}
+                            style={{
+                                marginTop: 14,
+                                height: 46,
+                                borderRadius: 12,
+                                borderWidth: 1.5,
+                                borderColor: Colors.light.red,
+                                justifyContent: 'center',
+                                alignItems: 'center',
+                                flexDirection: 'row',
+                                gap: 6,
+                                backgroundColor: '#FEF2F2',
+                            }}
+                        >
+                            <Ionicons name="close-circle-outline" size={18} color={Colors.light.red} />
+                            <Text style={{ fontSize: 14, fontWeight: '600', color: Colors.light.red }}>
+                                Cancel Ride
+                            </Text>
+                        </TouchableOpacity>
                     </View>
                 )}
 
@@ -1975,18 +2078,29 @@ export default function Home() {
                                     Cancel Ride
                                 </Text>
                                 <Text style={{ fontSize: 13, color: Colors.light.secondaryText, marginBottom: 20 }}>
-                                    Please let us know why you're cancelling.
+                                    {tripInProgress
+                                        ? 'The ride is in progress. Please choose a reason to cancel/stop:'
+                                        : 'Please let us know why you\'re cancelling.'}
                                 </Text>
 
                                 {/* Preset reasons */}
-                                {[
-                                    'Driver is taking too long',
-                                    'I made a wrong booking',
-                                    'Found another ride',
-                                    'Changed my plans',
-                                    'Emergency',
-                                    'Other',
-                                ].map((reason) => (
+                                {(tripInProgress
+                                    ? [
+                                        'Emergency / Stop ride immediately',
+                                        'Driver took wrong route',
+                                        'Vehicle issue / safety concern',
+                                        'Changed destination or plans',
+                                        'Other',
+                                    ]
+                                    : [
+                                        'Driver is taking too long',
+                                        'I made a wrong booking',
+                                        'Found another ride',
+                                        'Changed my plans',
+                                        'Emergency',
+                                        'Other',
+                                    ]
+                                ).map((reason) => (
                                     <TouchableOpacity
                                         key={reason}
                                         onPress={() => { setCancelReason(reason); setCancelCustomText(''); }}
